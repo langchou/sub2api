@@ -34,8 +34,8 @@ func ExtractPromptSnapshot(req Request) (PromptSnapshot, error) {
 }
 
 // ExtractBlockingPromptSnapshot builds the narrow, low-latency blocking input
-// when configured. Asynchronous auditing always uses ExtractPromptSnapshot so
-// the complete client-controlled transcript is retained for review.
+// when configured. Asynchronous snapshots retain the full transcript for the
+// event detail while DecisionText identifies the current user text block.
 func ExtractBlockingPromptSnapshot(req Request, latestTurnOnly bool) (PromptSnapshot, error) {
 	return extractPromptSnapshot(req, latestTurnOnly)
 }
@@ -67,7 +67,7 @@ func extractPromptSnapshot(req Request, latestTurnOnly bool) (PromptSnapshot, er
 		PromptHash: hex.EncodeToString(digest[:]), RedactedPreview: BuildPromptPreview(metadataText, DefaultPromptPreviewMaxRunes),
 		FullPrompt:   BuildFullPrompt(metadataText, DefaultFullPromptMaxRunes),
 		PromptLength: utf8.RuneCountInString(metadataText), MessageCount: len(segments), Stage: stage,
-		ScanText: scanText,
+		ScanText: scanText, DecisionText: segments[0],
 	}, nil
 }
 

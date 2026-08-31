@@ -122,11 +122,13 @@ type PromptSnapshot struct {
 	MessageCount       int    `json:"message_count"`
 	Stage              string `json:"stage"`
 
-	ScanText string `json:"-"`
+	ScanText     string `json:"-"`
+	DecisionText string `json:"-"`
 }
 
 func (s PromptSnapshot) Redacted() PromptSnapshot {
 	s.ScanText = ""
+	s.DecisionText = ""
 	return s
 }
 

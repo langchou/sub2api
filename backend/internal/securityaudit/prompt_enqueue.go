@@ -50,6 +50,12 @@ func (e *Enqueuer) Enqueue(ctx context.Context, req Request) error {
 		LogWarn(EventEnqueueDropped, mergeLogFields(baseFields, map[string]any{"status": "dropped", "error_code": "snapshot_invalid"}))
 		return nil
 	}
+	payload, err := encodePromptPayload(snapshot)
+	if err != nil {
+		e.recordDropped()
+		LogWarn(EventEnqueueDropped, mergeLogFields(baseFields, map[string]any{"status": "dropped", "error_code": "snapshot_invalid"}))
+		return nil
+	}
 	job, err := e.repo.CreateStagingWithCapacity(ctx, snapshot.Redacted(), cfg.ConfigVersion, 3, cfg.QueueCapacity)
 	if err != nil {
 		code := "database_unavailable"
@@ -65,7 +71,7 @@ func (e *Enqueuer) Enqueue(ctx context.Context, req Request) error {
 		e.recordDropped()
 		return err
 	}
-	if err := e.payload.Set(ctx, job.ID, snapshot.ScanText, DefaultPayloadTTL); err != nil {
+	if err := e.payload.Set(ctx, job.ID, payload, DefaultPayloadTTL); err != nil {
 		_ = e.repo.MarkStagingFailed(ctx, job.ID, "payload_store_failed", "payload store unavailable")
 		LogWarn(EventEnqueueDropped, mergeLogFields(baseFields, map[string]any{
 			"job_id": job.ID, "status": "dropped", "error_code": "payload_store_failed",

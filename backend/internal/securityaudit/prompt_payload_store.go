@@ -2,12 +2,48 @@ package securityaudit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
+
+const promptPayloadFormat = "sub2api-prompt-audit-v2"
+
+type queuedPromptPayload struct {
+	Format       string `json:"format"`
+	DecisionText string `json:"decision_text"`
+	FullPrompt   string `json:"full_prompt"`
+}
+
+func encodePromptPayload(snapshot PromptSnapshot) (string, error) {
+	if snapshot.DecisionText == "" || snapshot.FullPrompt == "" {
+		return "", fmt.Errorf("prompt audit payload input invalid")
+	}
+	raw, err := json.Marshal(queuedPromptPayload{
+		Format: promptPayloadFormat, DecisionText: snapshot.DecisionText, FullPrompt: snapshot.FullPrompt,
+	})
+	return string(raw), err
+}
+
+func decodePromptPayload(raw string) (queuedPromptPayload, error) {
+	if raw == "" {
+		return queuedPromptPayload{}, fmt.Errorf("prompt audit payload input invalid")
+	}
+	var payload queuedPromptPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err == nil && payload.Format == promptPayloadFormat {
+		if payload.DecisionText == "" || payload.FullPrompt == "" {
+			return queuedPromptPayload{}, fmt.Errorf("prompt audit payload input invalid")
+		}
+		return payload, nil
+	}
+	// Jobs queued by the previous release contain the full scan text directly.
+	decisionText, _, _ := strings.Cut(raw, promptAuditPrioritySeparator)
+	return queuedPromptPayload{Format: "legacy", DecisionText: decisionText, FullPrompt: FullPromptFromScanText(raw)}, nil
+}
 
 type PayloadStore interface {
 	Set(ctx context.Context, jobID int64, scanText string, ttl time.Duration) error

@@ -138,18 +138,22 @@ func (r *Runner) processSafely(ctx context.Context, workerID int, cfg ActiveConf
 func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig, job *Job) error {
 	baseFields := jobLogFields(job)
 	LogInfo(EventAuditStarted, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "attempts": job.Attempts, "status": "processing"}))
-	scanText, err := r.payload.Get(ctx, job.ID)
+	rawPayload, err := r.payload.Get(ctx, job.ID)
 	if err != nil {
 		return r.finishFailure(ctx, job, &GuardError{Code: "payload_missing", Retryable: false, Cause: err})
 	}
-	// The job row only carries redacted metadata; the full prompt for the audit
-	// event is reconstructed here from the transient scan payload.
-	job.Snapshot.FullPrompt = FullPromptFromScanText(scanText)
+	payload, err := decodePromptPayload(rawPayload)
+	if err != nil {
+		return r.finishFailure(ctx, job, &GuardError{Code: "payload_invalid", Retryable: false, Cause: err})
+	}
+	job.Snapshot.FullPrompt = payload.FullPrompt
 	endpoints := cfg.EnabledEndpoints()
 	if len(endpoints) == 0 {
 		return r.finishFailure(ctx, job, &GuardError{Code: "no_enabled_endpoint", Retryable: true})
 	}
-	aggregated, err := r.scanPrompt(ctx, workerID, job, cfg.Scanners, endpoints, scanText, "primary", true, func(ctx context.Context, now time.Time) error {
+	scanJob := *job
+	scanJob.Snapshot.PromptLength = len([]rune(payload.DecisionText))
+	aggregated, err := r.scanPrompt(ctx, workerID, &scanJob, cfg.Scanners, endpoints, payload.DecisionText, "primary", true, func(ctx context.Context, now time.Time) error {
 		return r.repo.RefreshLease(ctx, job.ID, job.ClaimVersion, now)
 	})
 	if err != nil {
@@ -323,6 +327,7 @@ func (r *Runner) processReview(ctx context.Context, cfg ActiveConfig, endpoint A
 	if job.Snapshot.ScanText == "" {
 		return r.finishReviewFailure(ctx, event, &GuardError{Code: "review_input_missing", Retryable: false})
 	}
+	job.Snapshot.PromptLength = len([]rune(job.Snapshot.ScanText))
 	result, err := r.scanPrompt(ctx, 0, job, cfg.Scanners, []ActiveEndpoint{endpoint}, job.Snapshot.ScanText, "review", false, func(ctx context.Context, now time.Time) error {
 		return r.repo.RefreshReviewLease(ctx, event.ID, event.Review.ClaimVersion, now)
 	})

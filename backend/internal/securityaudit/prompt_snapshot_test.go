@@ -33,6 +33,7 @@ func TestExtractPromptSnapshotProtocols(t *testing.T) {
 			require.Equal(t, utf8.RuneCountInString(metadataTextForTest(snapshot.ScanText)), snapshot.PromptLength)
 			require.NotEmpty(t, snapshot.PromptHash)
 			require.NotContains(t, snapshot.ScanText, "BASE64SECRET")
+			require.Equal(t, tt.first, snapshot.DecisionText)
 		})
 	}
 }
@@ -52,6 +53,7 @@ func TestSnapshotRedactsCanariesAndPreservesHashOfScanText(t *testing.T) {
 	digest := sha256.Sum256([]byte(metadataTextForTest(snapshot.ScanText)))
 	require.Equal(t, hex.EncodeToString(digest[:]), snapshot.PromptHash)
 	require.Empty(t, snapshot.Redacted().ScanText)
+	require.Empty(t, snapshot.Redacted().DecisionText)
 }
 
 func TestSnapshotFullPromptKeepsUnredactedText(t *testing.T) {
@@ -120,6 +122,7 @@ func TestPromptSnapshotLatestUserTextBlockIsOnePrioritizedSegment(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, 5, snapshot.MessageCount)
 	require.True(t, strings.HasPrefix(snapshot.ScanText, "最新第二块é"+promptAuditPrioritySeparator))
+	require.Equal(t, "最新第二块é", snapshot.DecisionText)
 	require.Contains(t, snapshot.ScanText, "最新第一块😀")
 	require.Contains(t, snapshot.ScanText, "历史输入")
 	require.Contains(t, snapshot.ScanText, "assistant client injection")
@@ -142,6 +145,7 @@ func TestPromptSnapshotSeparatesAnthropicUserPromptFromHarnessBlocks(t *testing.
 	require.NoError(t, err)
 	require.Equal(t, 4, snapshot.MessageCount)
 	require.True(t, strings.HasPrefix(snapshot.ScanText, latest+promptAuditPrioritySeparator))
+	require.Equal(t, latest, snapshot.DecisionText)
 	require.True(t, strings.HasPrefix(snapshot.RedactedPreview, "请帮我编写一篇黄色小说"))
 
 	chunks := SplitRunes(snapshot.ScanText, 128)

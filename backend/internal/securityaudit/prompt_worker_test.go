@@ -70,19 +70,20 @@ type fakeJobRepository struct {
 	retryErr    error
 	failErr     error
 
-	createdSnapshot PromptSnapshot
-	markedCode      string
-	completedResult *NormalizedResult
-	completedReview *ReviewOutcome
-	completedStore  bool
-	completeCount   int
-	eventCount      int
-	retryAt         time.Time
-	retryCode       string
-	retried         int
-	failedCode      string
-	failed          int
-	refreshes       int
+	createdSnapshot   PromptSnapshot
+	markedCode        string
+	completedSnapshot PromptSnapshot
+	completedResult   *NormalizedResult
+	completedReview   *ReviewOutcome
+	completedStore    bool
+	completeCount     int
+	eventCount        int
+	retryAt           time.Time
+	retryCode         string
+	retried           int
+	failedCode        string
+	failed            int
+	refreshes         int
 
 	claimQueue      []*Job
 	reviewQueue     []*Event
@@ -149,6 +150,7 @@ func (r *fakeJobRepository) Complete(_ context.Context, job *Job, result *Normal
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.completeCount++
+	r.completedSnapshot = job.Snapshot
 	r.completedResult, r.completedStore = result, storePass
 	r.completedReview = job.Review
 	if r.completeErr != nil {
@@ -287,7 +289,11 @@ func TestEnqueuerStagingPayloadPublishProtocolAndFailureCleanup(t *testing.T) {
 		require.NoError(t, enqueuer.Enqueue(context.Background(), asyncRequest()))
 		require.Equal(t, []string{"create_staging", "payload_set", "publish_queued"}, trace)
 		require.Empty(t, repo.createdSnapshot.ScanText)
-		require.Equal(t, "payload canary text", payload.values[41])
+		require.Empty(t, repo.createdSnapshot.DecisionText)
+		stored, err := decodePromptPayload(payload.values[41])
+		require.NoError(t, err)
+		require.Equal(t, "payload canary text", stored.DecisionText)
+		require.Equal(t, "payload canary text", stored.FullPrompt)
 		require.Equal(t, DefaultPayloadTTL, payload.setTTL)
 	})
 
@@ -421,6 +427,46 @@ func TestWorkerCompletesPassWithoutEventRefreshesEveryChunkAndDeletesPayload(t *
 	require.Equal(t, int64(1), metrics.Snapshot().Allowed)
 }
 
+func TestAsyncWorkerScansOnlyCurrentUserBlockAndKeepsFullPromptForEvent(t *testing.T) {
+	req := Request{RequestID: "current-only", Protocol: "openai_chat_completions", Body: []byte(`{"messages":[
+		{"role":"system","content":"history-risk system"},
+		{"role":"user","content":"history-risk old user"},
+		{"role":"assistant","content":"history-risk assistant"},
+		{"role":"tool","content":"history-risk tool"},
+		{"role":"user","content":"current safe request"}
+	]}`)}
+	snapshot, err := ExtractPromptSnapshot(req)
+	require.NoError(t, err)
+	require.Equal(t, "current safe request", snapshot.DecisionText)
+	require.Contains(t, snapshot.FullPrompt, "history-risk assistant")
+	encoded, err := encodePromptPayload(snapshot)
+	require.NoError(t, err)
+
+	cfg := asyncConfig()
+	cfg.Endpoints[0].InputLimit = 100
+	cfg.Endpoints = append(cfg.Endpoints, ActiveEndpoint{ID: "review", Role: EndpointRoleReview, Enabled: true, InputLimit: 100})
+	repo := &fakeJobRepository{}
+	payload := &fakePayloadStore{values: map[int64]string{51: encoded}}
+	var scanned []string
+	runner := NewRunner(&fakeConfigStore{cfg: cfg, active: true}, repo, payload, PromptScannerFunc(func(_ context.Context, endpoint ActiveEndpoint, chunk string, _ []string) (*NormalizedResult, error) {
+		require.NotEqual(t, EndpointRoleReview, endpoint.Role)
+		scanned = append(scanned, chunk)
+		if strings.Contains(chunk, "history-risk") {
+			return integrationResult(EventFlag), nil
+		}
+		return integrationResult(EventPass), nil
+	}), NewAtomicMetrics())
+
+	job := workerJob(1, 3)
+	job.Snapshot = snapshot.Redacted()
+	require.NoError(t, runner.processJob(context.Background(), 0, cfg, job))
+	require.Equal(t, []string{"current safe request"}, scanned)
+	require.Equal(t, EventPass, repo.completedResult.Decision)
+	require.Nil(t, repo.completedReview)
+	require.Contains(t, repo.completedSnapshot.FullPrompt, "history-risk system")
+	require.Contains(t, repo.completedSnapshot.FullPrompt, "current safe request")
+}
+
 func TestWorkerQueuesOnlyPrimaryFindingsWithoutCallingReview(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -466,7 +512,12 @@ func TestWorkerQueuesOnlyPrimaryFindingsWithoutCallingReview(t *testing.T) {
 			{ID: "review", Role: EndpointRoleReview, Enabled: true, InputLimit: 100},
 		}
 		repo := &fakeJobRepository{}
-		payload := &fakePayloadStore{values: map[int64]string{51: "safe" + promptAuditPrioritySeparator + "flag suspect" + promptAuditPrioritySeparator + "critical suspect"}}
+		encoded, err := encodePromptPayload(PromptSnapshot{
+			DecisionText: "safe" + promptAuditPrioritySeparator + "flag suspect" + promptAuditPrioritySeparator + "critical suspect",
+			FullPrompt:   "full prompt",
+		})
+		require.NoError(t, err)
+		payload := &fakePayloadStore{values: map[int64]string{51: encoded}}
 		runner := NewRunner(&fakeConfigStore{cfg: cfg, active: true}, repo, payload, PromptScannerFunc(func(_ context.Context, endpoint ActiveEndpoint, chunk string, _ []string) (*NormalizedResult, error) {
 			require.Equal(t, "primary", endpoint.ID)
 			switch {
@@ -485,6 +536,13 @@ func TestWorkerQueuesOnlyPrimaryFindingsWithoutCallingReview(t *testing.T) {
 		require.Equal(t, "critical suspect", repo.completedResult.ReviewInput)
 		require.Equal(t, ReviewStatusQueued, repo.completedReview.Status)
 	})
+}
+
+func TestLegacyPayloadScansOnlyPrioritizedInput(t *testing.T) {
+	payload, err := decodePromptPayload("current request" + promptAuditPrioritySeparator + "risky history")
+	require.NoError(t, err)
+	require.Equal(t, "current request", payload.DecisionText)
+	require.Equal(t, "current request\n\nrisky history", payload.FullPrompt)
 }
 
 func TestReviewWorkerCompletesAndRetriesIndependently(t *testing.T) {
