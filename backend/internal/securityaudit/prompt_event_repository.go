@@ -15,17 +15,18 @@ import (
 )
 
 type EventFilter struct {
-	Decision   string     `json:"decision,omitempty"`
-	RiskLevel  string     `json:"risk_level,omitempty"`
-	Endpoint   string     `json:"endpoint,omitempty"`
-	GroupID    *int64     `json:"group_id,omitempty"`
-	UserID     *int64     `json:"user_id,omitempty"`
-	APIKeyID   *int64     `json:"api_key_id,omitempty"`
-	RequestID  string     `json:"request_id,omitempty"`
-	PromptHash string     `json:"prompt_hash,omitempty"`
-	Keyword    string     `json:"keyword,omitempty"`
-	StartAt    *time.Time `json:"start_at,omitempty"`
-	EndAt      *time.Time `json:"end_at,omitempty"`
+	Decision     string     `json:"decision,omitempty"`
+	RiskLevel    string     `json:"risk_level,omitempty"`
+	ReviewResult string     `json:"review_result,omitempty"`
+	Endpoint     string     `json:"endpoint,omitempty"`
+	GroupID      *int64     `json:"group_id,omitempty"`
+	UserID       *int64     `json:"user_id,omitempty"`
+	APIKeyID     *int64     `json:"api_key_id,omitempty"`
+	RequestID    string     `json:"request_id,omitempty"`
+	PromptHash   string     `json:"prompt_hash,omitempty"`
+	Keyword      string     `json:"keyword,omitempty"`
+	StartAt      *time.Time `json:"start_at,omitempty"`
+	EndAt        *time.Time `json:"end_at,omitempty"`
 }
 
 type EventPage struct {
@@ -241,12 +242,26 @@ func validateDeleteFilter(filter EventFilter) error {
 	if filter.StartAt == nil || filter.EndAt == nil || !filter.StartAt.Before(*filter.EndAt) {
 		return errors.New("prompt audit filter delete requires a valid explicit time range")
 	}
+	if !validReviewResultFilter(filter.ReviewResult) {
+		return errors.New("prompt audit review result filter is invalid")
+	}
 	return nil
+}
+
+func validReviewResultFilter(value string) bool {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "", ReviewStatusQueued, ReviewStatusProcessing, ReviewStatusFailed,
+		string(EventPass), string(EventFlag), string(EventCritical):
+		return true
+	default:
+		return false
+	}
 }
 
 func canonicalEventFilter(filter EventFilter) EventFilter {
 	filter.Decision = strings.TrimSpace(strings.ToLower(filter.Decision))
 	filter.RiskLevel = strings.TrimSpace(strings.ToLower(filter.RiskLevel))
+	filter.ReviewResult = strings.TrimSpace(strings.ToLower(filter.ReviewResult))
 	filter.Endpoint = strings.TrimSpace(filter.Endpoint)
 	filter.RequestID = strings.TrimSpace(filter.RequestID)
 	filter.PromptHash = strings.ToLower(strings.TrimSpace(filter.PromptHash))
@@ -275,6 +290,12 @@ func buildEventWhere(filter EventFilter, firstIndex int) (string, []any) {
 	}
 	if filter.RiskLevel != "" {
 		add(" AND e.risk_level=$%d", filter.RiskLevel)
+	}
+	switch filter.ReviewResult {
+	case ReviewStatusQueued, ReviewStatusProcessing, ReviewStatusFailed:
+		add(" AND e.review_result->>'status'=$%d", filter.ReviewResult)
+	case string(EventPass), string(EventFlag), string(EventCritical):
+		add(" AND e.review_result#>>'{result,decision}'=$%d", filter.ReviewResult)
 	}
 	if filter.Endpoint != "" {
 		add(" AND e.endpoint=$%d", filter.Endpoint)
@@ -326,7 +347,7 @@ func eventDetailColumns(alias string) string {
 	return eventColumns(alias) + fmt.Sprintf(",%[1]s.full_prompt", alias)
 }
 
-func scanEvent(row rowScanner, withFullPrompt ...bool) (*Event, error) {
+func scanEvent(row rowScanner, options ...bool) (*Event, error) {
 	event := &Event{}
 	var userID, apiKeyID, groupID sql.NullInt64
 	var categories, matched, scores, evidence, review []byte
@@ -338,8 +359,11 @@ func scanEvent(row rowScanner, withFullPrompt ...bool) (*Event, error) {
 		&event.RiskLevel, &event.Action, &categories, &matched, &scores, &evidence, &event.ScannerBackend,
 		&event.ScannerVersion, &event.GuardEndpointID, &event.PolicyID, &event.PolicyVersion,
 		&event.ConfigVersion, &event.ChunkTotal, &event.LatencyMS, &review, &event.CreatedAt}
-	if len(withFullPrompt) > 0 && withFullPrompt[0] {
+	if len(options) > 0 && options[0] {
 		dest = append(dest, &event.Snapshot.FullPrompt)
+	}
+	if len(options) > 1 && options[1] {
+		dest = append(dest, &event.Snapshot.ScanText)
 	}
 	err := row.Scan(dest...)
 	if err != nil {

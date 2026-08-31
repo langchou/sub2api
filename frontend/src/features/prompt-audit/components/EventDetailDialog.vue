@@ -20,7 +20,7 @@
             <template v-if="event.review">
               <dt class="text-gray-500">{{ t('admin.promptAudit.events.reviewDecision') }}</dt>
               <dd v-if="event.review.result" class="font-medium text-gray-900 dark:text-white">{{ formatDecisionAction(event.review.result.decision, event.review.result.action) }}</dd>
-              <dd v-else class="text-red-600 dark:text-red-300">{{ event.review.error_code || t('admin.promptAudit.events.reviewFailed') }}</dd>
+              <dd v-else :class="reviewStatusClass(event.review.status)">{{ reviewOutcomeText(event.review) }}</dd>
             </template>
             <dt class="text-gray-500">{{ t('admin.promptAudit.events.user') }}</dt><dd>{{ event.snapshot.username || '—' }}</dd>
             <dt class="text-gray-500">{{ t('admin.promptAudit.events.email') }}</dt><dd>{{ event.snapshot.user_email || '—' }}</dd>
@@ -45,7 +45,7 @@
               <div v-if="event.review" class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-700" data-test="risk-review-return">
                 <h4 class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.events.reviewGuardReturn') }}</h4>
                 <pre v-if="event.review.result" class="mt-2 max-h-[min(46vh,26rem)] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-4 font-mono text-xs text-gray-700 dark:bg-dark-900 dark:text-dark-200">{{ formatGuardReturn(event.review.result) }}</pre>
-                <p v-else class="mt-2 text-sm text-red-600 dark:text-red-300">{{ event.review.error_code || t('admin.promptAudit.events.reviewFailed') }}</p>
+                <p v-else class="mt-2 text-sm" :class="reviewStatusClass(event.review.status)">{{ reviewOutcomeText(event.review) }}</p>
               </div>
             </section>
           </div>
@@ -93,7 +93,7 @@
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
-import type { PromptAuditEvent, PromptAuditReviewResult, PromptIssueSummary } from '../types'
+import type { PromptAuditEvent, PromptAuditReviewOutcome, PromptAuditReviewResult, PromptIssueSummary } from '../types'
 import { SCANNER_CATALOG } from '../viewModel'
 
 const props = defineProps<{ show: boolean; event: PromptAuditEvent | null; loading: boolean }>()
@@ -151,6 +151,15 @@ function formatGuardReturn(event: PromptAuditEvent | PromptAuditReviewResult): s
     chunk_total: event.chunk_total,
     latency_ms: event.latency_ms,
   }, null, 2)
+}
+function reviewOutcomeText(review: PromptAuditReviewOutcome): string {
+  const label = t(`admin.promptAudit.events.reviewOptions.${review.status}`)
+  return review.status === 'failed' && review.error_code ? `${label} · ${review.error_code}` : label
+}
+function reviewStatusClass(status: PromptAuditReviewOutcome['status']): string {
+  if (status === 'failed') return 'text-red-600 dark:text-red-300'
+  if (status === 'processing') return 'text-primary-600 dark:text-primary-300'
+  return 'text-gray-600 dark:text-dark-300'
 }
 function issueTitle(issue: PromptIssueSummary): string {
   return translateCategory(issue.category || issue.scanner_id) || issue.title

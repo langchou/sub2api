@@ -94,6 +94,13 @@ export interface PromptQueueStats {
   active: number
 }
 
+export interface PromptReviewQueueStats {
+  queued: number
+  processing: number
+  completed: number
+  failed: number
+}
+
 export interface PromptGuardMetrics {
   total: number
   allowed: number
@@ -124,6 +131,7 @@ export interface PromptAuditRuntime {
   worker_heartbeat_at?: string
   queue_capacity: number
   queue: PromptQueueStats
+  review_queue: PromptReviewQueueStats
   processed_total: number
   failed_total: number
   enqueued_total: number
@@ -195,9 +203,16 @@ export interface PromptAuditReviewResult {
 }
 
 export interface PromptAuditReviewOutcome {
-  status: 'completed' | 'failed'
+  status: 'queued' | 'processing' | 'completed' | 'failed'
   result?: PromptAuditReviewResult
   error_code?: string
+  attempts?: number
+  max_attempts?: number
+  claim_version?: number
+  queued_at?: string
+  next_attempt_at?: string
+  processing_started_at?: string
+  completed_at?: string
 }
 
 export interface PromptAuditEvent {
@@ -227,6 +242,7 @@ export interface PromptAuditEvent {
 export interface PromptEventFilters {
   decision: string
   risk_level: string
+  review_result: string
   endpoint: string
   group_id: string
   user_id: string

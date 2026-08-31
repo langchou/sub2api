@@ -10,6 +10,32 @@
       </button>
     </div>
 
+    <div class="mt-5 flex flex-wrap items-center justify-between gap-3 border-y border-gray-200 py-3 dark:border-dark-700/60" data-test="review-entry">
+      <div>
+        <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.promptAudit.pool.reviewEntryTitle') }}</p>
+        <p class="mt-0.5 text-xs text-gray-500 dark:text-dark-400">
+          {{ reviewEndpoint ? t(reviewEndpoint.enabled ? 'admin.promptAudit.pool.reviewEnabled' : 'admin.promptAudit.pool.reviewDisabled', { name: reviewEndpoint.name }) : t('admin.promptAudit.pool.reviewMissing') }}
+        </p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button
+          v-if="reviewEndpoint"
+          type="button"
+          role="switch"
+          :aria-checked="reviewEndpoint.enabled"
+          :aria-label="t('admin.promptAudit.pool.toggleNode', { name: reviewEndpoint.name })"
+          class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-primary-500"
+          :class="reviewEndpoint.enabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'"
+          @click="toggleEndpoint(reviewEndpoint.id)"
+        >
+          <span class="pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform" :class="reviewEndpoint.enabled ? 'translate-x-5' : 'translate-x-0'" />
+        </button>
+        <button type="button" class="btn btn-secondary btn-sm" data-test="configure-review" @click="reviewEndpoint ? openEdit(reviewEndpoint) : openCreateReview()">
+          {{ t('admin.promptAudit.pool.configureReview') }}
+        </button>
+      </div>
+    </div>
+
     <div v-if="endpoints.length === 0" class="mt-5 rounded-xl border border-dashed border-gray-300 px-5 py-10 text-center text-sm text-gray-500 dark:border-dark-600 dark:bg-dark-900/20 dark:text-dark-300">
       {{ t('admin.promptAudit.pool.empty') }}
     </div>
@@ -168,10 +194,19 @@ const { t } = useI18n()
 const editing = ref<PromptAuditEndpointDraft | null>(null)
 const editingIndex = ref(-1)
 const hasOtherReview = computed(() => props.endpoints.some((endpoint, index) => endpoint.role === 'review' && index !== editingIndex.value))
+const reviewEndpoint = computed(() => props.endpoints.find((endpoint) => endpoint.role === 'review'))
 
 function openCreate() {
   editingIndex.value = -1
   editing.value = createDefaultEndpoint(props.endpoints.length + 1)
+}
+function openCreateReview() {
+  openCreate()
+  if (!editing.value) return
+  editing.value.role = 'review'
+  editing.value.name = t('admin.promptAudit.pool.reviewDefaultName')
+  editing.value.timeout_ms = 120000
+  editing.value.input_limit = 3000
 }
 function openEdit(endpoint: PromptAuditEndpointDraft) {
   editingIndex.value = props.endpoints.findIndex((item) => item.id === endpoint.id)

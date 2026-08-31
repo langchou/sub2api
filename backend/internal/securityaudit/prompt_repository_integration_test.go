@@ -43,7 +43,7 @@ func openPromptAuditIntegrationDB(t *testing.T) *sql.DB {
 		);
 	`)
 	require.NoError(t, err)
-	for _, name := range []string{"181_prompt_audit.sql", "182_prompt_audit_full_prompt.sql", "232_langchou_prompt_audit_review.sql"} {
+	for _, name := range []string{"181_prompt_audit.sql", "182_prompt_audit_full_prompt.sql", "232_langchou_prompt_audit_review.sql", "233_langchou_prompt_audit_review_queue.sql"} {
 		migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		require.NoError(t, err)
 		// The migration runner can retry an interrupted deployment; the migration
@@ -137,6 +137,7 @@ func TestPromptAuditMigrationSchemaAndLeakageGate(t *testing.T) {
 		"idx_prompt_audit_events_decision_created", "idx_prompt_audit_events_risk_created",
 		"idx_prompt_audit_events_user_created", "idx_prompt_audit_events_api_key_created",
 		"idx_prompt_audit_events_group_created", "idx_prompt_audit_events_prompt_hash", "idx_prompt_audit_events_created",
+		"idx_prompt_audit_events_review_pending",
 	} {
 		require.Truef(t, indexes[name], "missing index %s", name)
 	}
@@ -297,6 +298,50 @@ func TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction(t *testin
 	require.Equal(t, int64(1), reclaimed)
 	require.NoError(t, db.QueryRow(`SELECT status FROM prompt_audit_jobs WHERE id=$1`, staging.ID).Scan(&status))
 	require.Equal(t, "failed", status)
+}
+
+func TestPromptAuditReviewQueueClaimFencingAndResultFilter(t *testing.T) {
+	db := openPromptAuditIntegrationDB(t)
+	repo := NewPostgreSQLRepository(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	job, err := repo.CreateStagingWithCapacity(ctx, integrationSnapshot("review"), 7, 3, 10)
+	require.NoError(t, err)
+	require.NoError(t, repo.PublishQueued(ctx, job.ID))
+	job, claimed, err := repo.ClaimNextJob(ctx, now.Add(time.Second))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	job.Snapshot.FullPrompt = "full prompt containing suspect chunk"
+	job.Review = &ReviewOutcome{Status: ReviewStatusQueued, MaxAttempts: 3, QueuedAt: &now, NextAttemptAt: &now}
+	primary := integrationResult(EventCritical)
+	primary.ReviewInput = "suspect chunk"
+	event, err := repo.Complete(ctx, job, primary, true)
+	require.NoError(t, err)
+	require.Empty(t, event.Snapshot.ScanText)
+
+	reviewEvent, reviewClaimed, err := repo.ClaimNextReview(ctx, now.Add(2*time.Second))
+	require.NoError(t, err)
+	require.True(t, reviewClaimed)
+	require.Empty(t, reviewEvent.Snapshot.FullPrompt)
+	require.Equal(t, "suspect chunk", reviewEvent.Snapshot.ScanText)
+	require.Equal(t, ReviewStatusProcessing, reviewEvent.Review.Status)
+	require.Equal(t, 1, reviewEvent.Review.Attempts)
+	require.NoError(t, repo.RefreshReviewLease(ctx, reviewEvent.ID, reviewEvent.Review.ClaimVersion, now.Add(3*time.Second)))
+
+	completed := cloneReviewOutcome(reviewEvent.Review)
+	completed.Status = ReviewStatusCompleted
+	completed.Result = integrationResult(EventPass)
+	require.NoError(t, repo.UpdateReview(ctx, reviewEvent.ID, reviewEvent.Review.ClaimVersion, completed))
+	require.ErrorIs(t, repo.UpdateReview(ctx, reviewEvent.ID, reviewEvent.Review.ClaimVersion, completed), ErrLeaseLost)
+
+	page, err := repo.ListEvents(ctx, EventFilter{Decision: string(EventCritical), ReviewResult: string(EventPass)}, 1, 10)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), page.Total)
+	require.Equal(t, EventPass, page.Items[0].Review.Result.Decision)
+	stats, err := repo.ReviewQueueStats(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), stats.Completed)
+	require.Zero(t, stats.Queued)
 }
 
 func TestPromptAuditRepositoryForeignKeysFiltersAndStableIdentitySnapshots(t *testing.T) {

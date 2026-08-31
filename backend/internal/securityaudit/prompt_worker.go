@@ -58,6 +58,8 @@ func (r *Runner) Start(ctx context.Context) error {
 	}
 	r.wg.Add(1)
 	go r.reclaimer(runCtx)
+	r.wg.Add(1)
+	go r.reviewWorker(runCtx)
 	return nil
 }
 
@@ -147,7 +149,9 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 	if len(endpoints) == 0 {
 		return r.finishFailure(ctx, job, &GuardError{Code: "no_enabled_endpoint", Retryable: true})
 	}
-	aggregated, err := r.scanPrompt(ctx, workerID, job, cfg.Scanners, endpoints, scanText, "primary", true)
+	aggregated, err := r.scanPrompt(ctx, workerID, job, cfg.Scanners, endpoints, scanText, "primary", true, func(ctx context.Context, now time.Time) error {
+		return r.repo.RefreshLease(ctx, job.ID, job.ClaimVersion, now)
+	})
 	if err != nil {
 		var guardErr *GuardError
 		if !errors.As(err, &guardErr) {
@@ -155,22 +159,11 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 		}
 		return r.finishFailure(ctx, job, guardErr)
 	}
-	if reviewEndpoint, ok := cfg.ReviewEndpoint(); ok && aggregated.Decision != EventPass {
-		LogInfo(EventReviewStarted, mergeLogFields(baseFields, map[string]any{
-			"worker_id": workerID, "guard_endpoint_id": reviewEndpoint.ID, "decision": aggregated.Decision, "status": "started",
-		}))
-		review, reviewErr := r.scanPrompt(ctx, workerID, job, cfg.Scanners, []ActiveEndpoint{reviewEndpoint}, scanText, "review", false)
-		if reviewErr != nil {
-			job.Review = &ReviewOutcome{Status: ReviewStatusFailed, ErrorCode: guardErrorCode(reviewErr)}
-			LogWarn(EventReviewFailed, mergeLogFields(baseFields, map[string]any{
-				"worker_id": workerID, "guard_endpoint_id": reviewEndpoint.ID, "status": "failed", "error_code": job.Review.ErrorCode,
-			}))
-		} else {
-			job.Review = &ReviewOutcome{Status: ReviewStatusCompleted, Result: review}
-			LogInfo(EventReviewCompleted, mergeLogFields(baseFields, map[string]any{
-				"worker_id": workerID, "guard_endpoint_id": reviewEndpoint.ID, "decision": review.Decision,
-				"risk_level": review.RiskLevel, "action": review.Action, "latency_ms": review.LatencyMS, "status": "completed",
-			}))
+	if _, ok := cfg.ReviewEndpoint(); ok && aggregated.Decision != EventPass {
+		now := r.clock.Now()
+		job.Review = &ReviewOutcome{
+			Status: ReviewStatusQueued, MaxAttempts: DefaultReviewAttempts,
+			QueuedAt: &now, NextAttemptAt: &now,
 		}
 	}
 	event, err := r.repo.Complete(ctx, job, aggregated, cfg.StorePassEvents)
@@ -181,21 +174,28 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 		LogWarn(EventProcessFailed, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "status": "payload_delete_deferred", "error_code": "payload_delete_failed"}))
 	}
 	LogInfo(EventProcessed, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "event_id": eventID(event), "decision": aggregated.Decision, "risk_level": aggregated.RiskLevel, "action": aggregated.Action, "guard_endpoint_id": aggregated.GuardEndpointID, "latency_ms": aggregated.LatencyMS, "status": "done"}))
+	if event != nil && job.Review != nil {
+		LogInfo(EventReviewQueued, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "event_id": event.ID, "decision": aggregated.Decision, "status": ReviewStatusQueued}))
+	}
 	if event != nil && aggregated.Decision != EventPass {
 		LogWarn(EventFindingRecorded, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "event_id": event.ID, "decision": aggregated.Decision, "risk_level": aggregated.RiskLevel, "action": aggregated.Action, "guard_endpoint_id": aggregated.GuardEndpointID, "status": "recorded"}))
 	}
 	return nil
 }
 
-func (r *Runner) scanPrompt(ctx context.Context, workerID int, job *Job, scanners []string, endpoints []ActiveEndpoint, scanText, scanStage string, observeMetrics bool) (*NormalizedResult, error) {
+func (r *Runner) scanPrompt(ctx context.Context, workerID int, job *Job, scanners []string, endpoints []ActiveEndpoint, scanText, scanStage string, observeMetrics bool, refreshLease func(context.Context, time.Time) error) (*NormalizedResult, error) {
 	baseFields := jobLogFields(job)
 	inputLimit := minimumInputLimit(endpoints)
 	chunks := SplitRunes(scanText, inputLimit)
 	results := make([]*NormalizedResult, 0, len(chunks))
+	bestReviewInput := ""
+	bestSeverity := 0
 	started := r.clock.Now()
 	for index, chunk := range chunks {
-		if err := r.repo.RefreshLease(ctx, job.ID, job.ClaimVersion, r.clock.Now()); err != nil {
-			return nil, err
+		if refreshLease != nil {
+			if err := refreshLease(ctx, r.clock.Now()); err != nil {
+				return nil, err
+			}
 		}
 		chunkStarted := r.clock.Now()
 		LogInfo(EventChunkStarted, mergeLogFields(baseFields, map[string]any{
@@ -223,6 +223,9 @@ func (r *Runner) scanPrompt(ctx context.Context, workerID int, job *Job, scanner
 			return nil, scanErr
 		}
 		results = append(results, result)
+		if severity := resultSeverity(result.Decision); bestReviewInput == "" || severity > bestSeverity {
+			bestReviewInput, bestSeverity = chunk, severity
+		}
 		LogInfo(EventChunkCompleted, mergeLogFields(baseFields, map[string]any{
 			"worker_id": workerID, "scan_stage": scanStage, "chunk_index": index + 1, "chunk_total": len(chunks),
 			"guard_endpoint_id": result.GuardEndpointID, "action": result.Action,
@@ -240,6 +243,9 @@ func (r *Runner) scanPrompt(ctx context.Context, workerID int, job *Job, scanner
 		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
 	}
 	aggregated.ChunkTotal = len(chunks)
+	if aggregated.Decision != EventPass {
+		aggregated.ReviewInput = bestReviewInput
+	}
 	if observeMetrics && r.metrics != nil {
 		r.metrics.Observe(decisionKindForResult(aggregated), r.clock.Now().Sub(started))
 	}
@@ -249,6 +255,120 @@ func (r *Runner) scanPrompt(ctx context.Context, workerID int, job *Job, scanner
 		"guard_endpoint_id": aggregated.GuardEndpointID, "status": "completed",
 	}))
 	return aggregated, nil
+}
+
+func (r *Runner) reviewWorker(ctx context.Context) {
+	defer r.wg.Done()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cfg, ok := r.config.Active()
+			if !ok || !cfg.RiskControlEnabled || !cfg.Enabled {
+				continue
+			}
+			endpoint, ok := cfg.ReviewEndpoint()
+			if !ok {
+				continue
+			}
+			for {
+				event, claimed, err := r.repo.ClaimNextReview(ctx, r.clock.Now())
+				if err != nil {
+					r.setLastError("claim_review_failed", err.Error())
+					break
+				}
+				if !claimed {
+					break
+				}
+				r.processReviewSafely(ctx, cfg, endpoint, event)
+			}
+		}
+	}
+}
+
+func (r *Runner) processReviewSafely(ctx context.Context, cfg ActiveConfig, endpoint ActiveEndpoint, event *Event) {
+	defer func() {
+		if recover() == nil || event == nil || event.Review == nil {
+			return
+		}
+		now := r.clock.Now()
+		outcome := cloneReviewOutcome(event.Review)
+		outcome.Status, outcome.ErrorCode = ReviewStatusFailed, "review_worker_panic"
+		outcome.Result, outcome.ProcessingStartedAt, outcome.NextAttemptAt = nil, nil, nil
+		outcome.CompletedAt = &now
+		_ = r.repo.UpdateReview(ctx, event.ID, event.Review.ClaimVersion, outcome)
+		r.setLastError(outcome.ErrorCode, "review worker panic recovered")
+		LogError(EventReviewFailed, mergeLogFields(eventLogFields(event), map[string]any{"worker_id": 0, "status": ReviewStatusFailed, "error_code": outcome.ErrorCode}))
+	}()
+	if err := r.processReview(ctx, cfg, endpoint, event); err != nil {
+		r.setLastError(guardErrorCode(err), err.Error())
+	}
+}
+
+func (r *Runner) processReview(ctx context.Context, cfg ActiveConfig, endpoint ActiveEndpoint, event *Event) error {
+	if event == nil || event.Review == nil {
+		return errors.New("prompt audit review event unavailable")
+	}
+	baseFields := eventLogFields(event)
+	LogInfo(EventReviewStarted, mergeLogFields(baseFields, map[string]any{
+		"worker_id": 0, "guard_endpoint_id": endpoint.ID, "decision": event.Decision, "status": ReviewStatusProcessing,
+	}))
+	job := &Job{
+		ID: event.JobID, Snapshot: event.Snapshot, ConfigVersion: event.ConfigVersion,
+		ClaimVersion: event.Review.ClaimVersion, Attempts: event.Review.Attempts, MaxAttempts: event.Review.MaxAttempts,
+	}
+	if job.Snapshot.ScanText == "" {
+		return r.finishReviewFailure(ctx, event, &GuardError{Code: "review_input_missing", Retryable: false})
+	}
+	result, err := r.scanPrompt(ctx, 0, job, cfg.Scanners, []ActiveEndpoint{endpoint}, job.Snapshot.ScanText, "review", false, func(ctx context.Context, now time.Time) error {
+		return r.repo.RefreshReviewLease(ctx, event.ID, event.Review.ClaimVersion, now)
+	})
+	if err != nil {
+		return r.finishReviewFailure(ctx, event, err)
+	}
+	now := r.clock.Now()
+	outcome := cloneReviewOutcome(event.Review)
+	outcome.Status, outcome.Result, outcome.ErrorCode = ReviewStatusCompleted, result, ""
+	outcome.ProcessingStartedAt, outcome.NextAttemptAt = nil, nil
+	outcome.CompletedAt = &now
+	if err := r.repo.UpdateReview(ctx, event.ID, event.Review.ClaimVersion, outcome); err != nil {
+		return err
+	}
+	LogInfo(EventReviewCompleted, mergeLogFields(baseFields, map[string]any{
+		"worker_id": 0, "guard_endpoint_id": endpoint.ID, "decision": result.Decision,
+		"risk_level": result.RiskLevel, "action": result.Action, "latency_ms": result.LatencyMS, "status": ReviewStatusCompleted,
+	}))
+	return nil
+}
+
+func (r *Runner) finishReviewFailure(ctx context.Context, event *Event, err error) error {
+	code := guardErrorCode(err)
+	retryable := false
+	var guardErr *GuardError
+	if errors.As(err, &guardErr) {
+		retryable = guardErr.Retryable
+	}
+	now := r.clock.Now()
+	outcome := cloneReviewOutcome(event.Review)
+	outcome.Result, outcome.ProcessingStartedAt = nil, nil
+	outcome.ErrorCode = code
+	if retryable && outcome.Attempts < outcome.MaxAttempts {
+		next := now.Add(retryBackoff(outcome.Attempts))
+		outcome.Status, outcome.NextAttemptAt, outcome.CompletedAt = ReviewStatusQueued, &next, nil
+	} else {
+		outcome.Status, outcome.NextAttemptAt, outcome.CompletedAt = ReviewStatusFailed, nil, &now
+	}
+	if updateErr := r.repo.UpdateReview(ctx, event.ID, event.Review.ClaimVersion, outcome); updateErr != nil {
+		return updateErr
+	}
+	LogWarn(EventReviewFailed, mergeLogFields(eventLogFields(event), map[string]any{
+		"worker_id": 0, "status": outcome.Status, "error_code": code, "retryable": retryable,
+		"attempts": outcome.Attempts, "max_attempts": outcome.MaxAttempts,
+	}))
+	return err
 }
 
 func (r *Runner) observeAsyncFailure(err error, latency time.Duration) {
@@ -323,6 +443,14 @@ func (r *Runner) reclaimer(ctx context.Context) {
 			}
 			if count > 0 {
 				LogWarn(EventProcessingReclaimed, map[string]any{"reclaimed_total": count, "status": "reclaimed"})
+			}
+			reviewCount, reviewErr := r.repo.ReclaimStaleReviews(ctx, now.Add(-processingLease), 100)
+			if reviewErr != nil {
+				r.setLastError("review_reclaim_failed", reviewErr.Error())
+				continue
+			}
+			if reviewCount > 0 {
+				LogWarn(EventProcessingReclaimed, map[string]any{"reclaimed_total": reviewCount, "scan_stage": "review", "status": "reclaimed"})
 			}
 		}
 	}

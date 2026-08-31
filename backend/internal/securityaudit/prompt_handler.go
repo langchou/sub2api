@@ -268,9 +268,14 @@ func eventFilterFromQuery(c *gin.Context) (EventFilter, error) {
 	if err != nil {
 		return EventFilter{}, err
 	}
+	reviewResult := strings.TrimSpace(strings.ToLower(c.Query("review_result")))
+	if !validReviewResultFilter(reviewResult) {
+		return EventFilter{}, infraerrors.BadRequest("prompt_audit_invalid_review_filter", "复审结果筛选无效")
+	}
 	filter := EventFilter{
 		Decision: c.Query("decision"), RiskLevel: c.Query("risk_level"), Endpoint: c.Query("endpoint"),
-		GroupID: groupID, UserID: userID, APIKeyID: apiKeyID, RequestID: c.Query("request_id"),
+		ReviewResult: reviewResult,
+		GroupID:      groupID, UserID: userID, APIKeyID: apiKeyID, RequestID: c.Query("request_id"),
 		PromptHash: c.Query("prompt_hash"), Keyword: c.Query("keyword"),
 	}
 	if value := strings.TrimSpace(c.Query("start_at")); value != "" {

@@ -3,7 +3,7 @@ export default {
     title: 'Prompt Audit',
     description: 'Review user input asynchronously or block it synchronously through OpenAI-compatible Qwen3Guard nodes. Full prompts are stored with events for admin review.',
     configVersion: 'Config version v{version}',
-    tabs: { config: 'Configuration', events: 'Events' },
+    tabs: { config: 'Configuration / 8B review', events: 'Events' },
     actions: { refresh: 'Refresh runtime', retry: 'Retry', Allow: 'Allow', Warn: 'Warn', Block: 'Block' },
     common: { actions: 'Actions', never: 'Never' },
     mode: { off: 'Off', async_audit: 'Async audit only', blocking: 'Synchronous audit and block' },
@@ -38,6 +38,7 @@ export default {
       process: 'Process status', mode: 'Effective mode', version: 'Active / expected version', workers: 'Active / total workers',
       queue: 'Active jobs / capacity', dependencies: 'Dependencies', guardMetrics: 'Synchronous Guard metrics', latest: 'Latest processing and error',
       queueBreakdown: 'queued {queued} · processing {processing} · retry {retry} · done {done} · failed {failed}',
+      reviewQueueBreakdown: '8B review queue: queued {queued} · processing {processing} · completed {completed} · failed {failed}',
       deliveryTotals: 'Total enqueued {enqueued} · dropped {dropped} · processed {processed} · failed {failed}',
     },
     metrics: { total: 'Total', allowed: 'Allowed', flagged: 'Flagged', blocked: 'Blocked', unavailable: 'Unavailable', timeouts: 'Timeouts', failovers: 'Failovers' },
@@ -49,6 +50,7 @@ export default {
       name: 'Node name', id: 'Stable node ID', role: 'Node purpose', roles: { primary: 'Primary', review: '8B review' }, baseUrl: 'Base URL', apiKey: 'API Key', keepSecret: 'Leave blank to keep the saved API Key', reenterSecret: 'The saved API Key cannot be decrypted (encryption key changed); enter a new one',
       secretHint: 'Plaintext exists only in this editor and is cleared immediately after a successful save.', clearSecret: 'Explicitly clear the saved API Key', timeout: 'Total timeout (ms)', inputLimit: 'Unicode characters per chunk',
       toggleNode: 'Toggle node {name}', deleteConfirm: 'Remove “{name}” from the draft? It takes effect after saving.',
+      reviewEntryTitle: '8B single-worker async review', reviewEnabled: 'Enabled: {name}; only suspicious risk chunks from primary audit are reviewed.', reviewDisabled: 'Configured but disabled: {name}', reviewMissing: 'No 8B review node is configured.', configureReview: 'Configure review node', reviewDefaultName: '8B review',
     },
     policy: {
       title: 'Audit policy', description: 'Configure group scope, nine input-risk categories, workers, and queue bounds.', scope: 'Scope', allGroups: 'All groups', selectedGroups: 'Selected groups',
@@ -63,7 +65,7 @@ export default {
     },
     events: {
       title: 'Audit events', description: 'Review events by identity, route, risk, hash, and time; the detail view shows the full prompt.', decision: 'Decision', risk: 'Risk level', endpoint: 'Endpoint', groupId: 'Group ID', userId: 'User ID', apiKeyId: 'API Key ID', keyword: 'Keyword',
-      startAt: 'Start time', endAt: 'End time', deleteSelected: 'Delete selected ({count})', deleteByFilter: 'Delete by filter',
+      startAt: 'Start time', endAt: 'End time', reviewFilter: 'Review result', reviewOptions: { queued: 'Queued', processing: 'Processing', pass: 'Review passed', flag: 'Review flagged', critical: 'Review critical', failed: 'Review failed' }, deleteSelected: 'Delete selected ({count})', deleteByFilter: 'Delete by filter',
       filterDeleteDialogTitle: 'Delete audit events by filter', filterDeleteDialogDesc: 'Choose the time range and risk criteria, then delete directly. Deletion is permanent. Generate a preview first if you want to see the match count.',
       filterTimeRange: 'Deletion time range', filterTimeRangeHint: 'Deletes events created before the selected cutoff. Events created after the preview are not affected.',
       timePresets: { '1d': 'Older than 1 day', '7d': 'Older than 7 days', '30d': 'Older than 30 days', '90d': 'Older than 90 days', all: 'All time', custom: 'Custom range' },

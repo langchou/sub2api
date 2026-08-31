@@ -26,6 +26,7 @@ const (
 	EventChunkCompleted       = "prompt_audit.scan_chunk_completed"
 	EventChunkFailed          = "prompt_audit.scan_chunk_failed"
 	EventChunksAggregated     = "prompt_audit.scan_chunks_aggregated"
+	EventReviewQueued         = "prompt_audit.review_queued"
 	EventReviewStarted        = "prompt_audit.review_started"
 	EventReviewCompleted      = "prompt_audit.review_completed"
 	EventReviewFailed         = "prompt_audit.review_failed"
@@ -46,7 +47,7 @@ var knownLogEvents = map[string]struct{}{
 	EventJobEnqueued: {}, EventEnqueueSkipped: {}, EventEnqueueDropped: {},
 	EventAuditStarted: {}, EventProcessingReclaimed: {}, EventProcessed: {}, EventProcessFailed: {}, EventFindingRecorded: {},
 	EventChunkStarted: {}, EventChunkCompleted: {}, EventChunkFailed: {}, EventChunksAggregated: {},
-	EventReviewStarted: {}, EventReviewCompleted: {}, EventReviewFailed: {},
+	EventReviewQueued: {}, EventReviewStarted: {}, EventReviewCompleted: {}, EventReviewFailed: {},
 	EventEvaluationStarted: {}, EventGuardAllowed: {}, EventGuardBlocked: {}, EventGuardFailed: {}, EventResultRecordFailed: {},
 	EventEventDeleted: {}, EventEventsDeleted: {}, EventDeletePreviewed: {}, EventEventsFilterDeleted: {},
 }
@@ -135,6 +136,20 @@ func jobLogFields(job *Job) map[string]any {
 	fields["job_id"] = job.ID
 	fields["config_version"] = job.ConfigVersion
 	fields["claim_version"] = job.ClaimVersion
+	return fields
+}
+
+func eventLogFields(event *Event) map[string]any {
+	if event == nil {
+		return map[string]any{}
+	}
+	fields := snapshotLogFields(event.Snapshot)
+	fields["job_id"] = event.JobID
+	fields["event_id"] = event.ID
+	fields["config_version"] = event.ConfigVersion
+	if event.Review != nil {
+		fields["claim_version"] = event.Review.ClaimVersion
+	}
 	return fields
 }
 

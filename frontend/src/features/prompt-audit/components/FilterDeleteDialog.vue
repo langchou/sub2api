@@ -31,7 +31,7 @@
         </div>
       </fieldset>
 
-      <div class="grid gap-3 sm:grid-cols-2">
+      <div class="grid gap-3 sm:grid-cols-3">
         <label class="text-xs text-gray-600 dark:text-dark-200">
           <span>{{ t('admin.promptAudit.events.decision') }}</span>
           <select v-model="local.decision" class="input mt-1 w-full" :aria-label="t('admin.promptAudit.events.decision')" data-test="delete-decision" @change="criteriaChanged">
@@ -49,6 +49,13 @@
             <option value="medium">{{ t('admin.promptAudit.riskLevels.medium') }}</option>
             <option value="high">{{ t('admin.promptAudit.riskLevels.high') }}</option>
             <option value="critical">{{ t('admin.promptAudit.riskLevels.critical') }}</option>
+          </select>
+        </label>
+        <label class="text-xs text-gray-600 dark:text-dark-200">
+          <span>{{ t('admin.promptAudit.events.reviewFilter') }}</span>
+          <select v-model="local.review_result" class="input mt-1 w-full" :aria-label="t('admin.promptAudit.events.reviewFilter')" data-test="delete-review-result" @change="criteriaChanged">
+            <option value="">{{ t('common.all') }}</option>
+            <option v-for="value in REVIEW_FILTERS" :key="value" :value="value">{{ t(`admin.promptAudit.events.reviewOptions.${value}`) }}</option>
           </select>
         </label>
       </div>
@@ -147,6 +154,7 @@ const { t, locale } = useI18n()
 
 const preset = ref<DeleteRangePreset>('7d')
 const local = reactive<PromptEventFilters>(emptyEventFilters())
+const REVIEW_FILTERS = ['queued', 'processing', 'pass', 'flag', 'critical', 'failed'] as const
 
 watch(
   () => props.show,

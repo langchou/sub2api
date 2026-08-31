@@ -194,6 +194,13 @@ func (s *PromptService) Runtime(ctx context.Context) RuntimeSnapshot {
 		} else {
 			runtime.Queue = stats
 		}
+		reviewStats, reviewErr := s.repo.ReviewQueueStats(ctx)
+		if reviewErr != nil {
+			runtime.DatabaseStatus = "error"
+			runtime.LastErrorCode = "database_unavailable"
+		} else {
+			runtime.ReviewQueue = reviewStats
+		}
 	} else {
 		runtime.DatabaseStatus = "error"
 	}

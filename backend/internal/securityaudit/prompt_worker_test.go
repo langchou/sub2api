@@ -84,7 +84,12 @@ type fakeJobRepository struct {
 	failed          int
 	refreshes       int
 
-	claimQueue []*Job
+	claimQueue      []*Job
+	reviewQueue     []*Event
+	reviewUpdated   *ReviewOutcome
+	reviewRefreshes int
+	reviewReclaimed int64
+	reviewStats     ReviewQueueStats
 
 	recordBlockingCalls    int
 	recordBlockingSnapshot PromptSnapshot
@@ -173,6 +178,34 @@ func (r *fakeJobRepository) ReclaimStale(context.Context, time.Time, time.Time, 
 	return 0, nil
 }
 func (r *fakeJobRepository) QueueStats(context.Context) (QueueStats, error) { return QueueStats{}, nil }
+func (r *fakeJobRepository) ClaimNextReview(context.Context, time.Time) (*Event, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.reviewQueue) == 0 {
+		return nil, false, nil
+	}
+	event := r.reviewQueue[0]
+	r.reviewQueue = r.reviewQueue[1:]
+	return event, true, nil
+}
+func (r *fakeJobRepository) RefreshReviewLease(context.Context, int64, int64, time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reviewRefreshes++
+	return r.refreshErr
+}
+func (r *fakeJobRepository) UpdateReview(_ context.Context, _ int64, _ int64, outcome *ReviewOutcome) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reviewUpdated = cloneReviewOutcome(outcome)
+	return nil
+}
+func (r *fakeJobRepository) ReclaimStaleReviews(context.Context, time.Time, int) (int64, error) {
+	return r.reviewReclaimed, nil
+}
+func (r *fakeJobRepository) ReviewQueueStats(context.Context) (ReviewQueueStats, error) {
+	return r.reviewStats, nil
+}
 func (r *fakeJobRepository) RecordBlocking(_ context.Context, snapshot PromptSnapshot, _ int64, result *NormalizedResult, _ bool) (*Event, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -388,19 +421,15 @@ func TestWorkerCompletesPassWithoutEventRefreshesEveryChunkAndDeletesPayload(t *
 	require.Equal(t, int64(1), metrics.Snapshot().Allowed)
 }
 
-func TestWorkerReviewsOnlyPrimaryFindingsAndPreservesReviewFailures(t *testing.T) {
+func TestWorkerQueuesOnlyPrimaryFindingsWithoutCallingReview(t *testing.T) {
 	for _, test := range []struct {
-		name         string
-		primary      EventDecision
-		review       *NormalizedResult
-		reviewErr    error
-		wantCalls    []string
-		wantStatus   string
-		wantDecision EventDecision
+		name       string
+		primary    EventDecision
+		wantStatus string
 	}{
-		{name: "safe skips review", primary: EventPass, wantCalls: []string{"primary"}},
-		{name: "finding is reviewed", primary: EventFlag, review: integrationResult(EventPass), wantCalls: []string{"primary", "review"}, wantStatus: ReviewStatusCompleted, wantDecision: EventPass},
-		{name: "review failure keeps primary event", primary: EventCritical, reviewErr: &GuardError{Code: ErrorCodeUnavailable}, wantCalls: []string{"primary", "review"}, wantStatus: ReviewStatusFailed},
+		{name: "safe skips review", primary: EventPass},
+		{name: "flag queues review", primary: EventFlag, wantStatus: ReviewStatusQueued},
+		{name: "critical queues review", primary: EventCritical, wantStatus: ReviewStatusQueued},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := asyncConfig()
@@ -413,31 +442,96 @@ func TestWorkerReviewsOnlyPrimaryFindingsAndPreservesReviewFailures(t *testing.T
 			calls := []string{}
 			runner := NewRunner(&fakeConfigStore{cfg: cfg, active: true}, repo, payload, PromptScannerFunc(func(_ context.Context, endpoint ActiveEndpoint, _ string, _ []string) (*NormalizedResult, error) {
 				calls = append(calls, endpoint.ID)
-				if endpoint.Role == EndpointRoleReview {
-					if test.reviewErr != nil {
-						return nil, test.reviewErr
-					}
-					result := *test.review
-					result.GuardEndpointID = endpoint.ID
-					return &result, nil
-				}
 				return integrationResult(test.primary), nil
 			}), NewAtomicMetrics())
 
 			require.NoError(t, runner.processJob(context.Background(), 0, cfg, workerJob(1, 3)))
-			require.Equal(t, test.wantCalls, calls)
+			require.Equal(t, []string{"primary"}, calls)
 			if test.wantStatus == "" {
 				require.Nil(t, repo.completedReview)
+				require.Empty(t, repo.completedResult.ReviewInput)
 				return
 			}
 			require.NotNil(t, repo.completedReview)
 			require.Equal(t, test.wantStatus, repo.completedReview.Status)
-			if test.wantStatus == ReviewStatusCompleted {
-				require.NotNil(t, repo.completedReview.Result)
-				require.Equal(t, test.wantDecision, repo.completedReview.Result.Decision)
+			require.Equal(t, "abc", repo.completedResult.ReviewInput)
+			require.Nil(t, repo.completedReview.Result)
+		})
+	}
+
+	t.Run("queues only the most severe finding chunk", func(t *testing.T) {
+		cfg := asyncConfig()
+		cfg.Endpoints = []ActiveEndpoint{
+			{ID: "primary", Role: EndpointRolePrimary, Enabled: true, InputLimit: 100},
+			{ID: "review", Role: EndpointRoleReview, Enabled: true, InputLimit: 100},
+		}
+		repo := &fakeJobRepository{}
+		payload := &fakePayloadStore{values: map[int64]string{51: "safe" + promptAuditPrioritySeparator + "flag suspect" + promptAuditPrioritySeparator + "critical suspect"}}
+		runner := NewRunner(&fakeConfigStore{cfg: cfg, active: true}, repo, payload, PromptScannerFunc(func(_ context.Context, endpoint ActiveEndpoint, chunk string, _ []string) (*NormalizedResult, error) {
+			require.Equal(t, "primary", endpoint.ID)
+			switch {
+			case strings.HasPrefix(chunk, "critical"):
+				return integrationResult(EventCritical), nil
+			case strings.HasPrefix(chunk, "flag"):
+				result := integrationResult(EventFlag)
+				result.Action = ActionWarn
+				return result, nil
+			default:
+				return integrationResult(EventPass), nil
+			}
+		}), NewAtomicMetrics())
+
+		require.NoError(t, runner.processJob(context.Background(), 0, cfg, workerJob(1, 3)))
+		require.Equal(t, "critical suspect", repo.completedResult.ReviewInput)
+		require.Equal(t, ReviewStatusQueued, repo.completedReview.Status)
+	})
+}
+
+func TestReviewWorkerCompletesAndRetriesIndependently(t *testing.T) {
+	reviewEvent := func(attempts int) *Event {
+		return &Event{
+			ID: 91, JobID: 51, Decision: EventCritical, ConfigVersion: 7,
+			Snapshot: PromptSnapshot{RequestID: "review-request", ScanText: "suspect chunk", PromptLength: 13},
+			Review:   &ReviewOutcome{Status: ReviewStatusProcessing, Attempts: attempts, MaxAttempts: 3, ClaimVersion: 2},
+		}
+	}
+	cfg := asyncConfig()
+	endpoint := ActiveEndpoint{ID: "review", Role: EndpointRoleReview, Enabled: true, InputLimit: 100}
+
+	t.Run("completed", func(t *testing.T) {
+		repo := &fakeJobRepository{}
+		runner := NewRunner(&fakeConfigStore{cfg: cfg, active: true}, repo, &fakePayloadStore{}, PromptScannerFunc(func(_ context.Context, got ActiveEndpoint, input string, _ []string) (*NormalizedResult, error) {
+			require.Equal(t, endpoint.ID, got.ID)
+			require.Equal(t, "suspect chunk", input)
+			return integrationResult(EventPass), nil
+		}), NewAtomicMetrics())
+		require.NoError(t, runner.processReview(context.Background(), cfg, endpoint, reviewEvent(1)))
+		require.Equal(t, 1, repo.reviewRefreshes)
+		require.NotNil(t, repo.reviewUpdated)
+		require.Equal(t, ReviewStatusCompleted, repo.reviewUpdated.Status)
+		require.Equal(t, EventPass, repo.reviewUpdated.Result.Decision)
+	})
+
+	for _, test := range []struct {
+		name       string
+		attempts   int
+		wantStatus string
+	}{
+		{name: "retryable failure returns to queue", attempts: 1, wantStatus: ReviewStatusQueued},
+		{name: "last failure is terminal", attempts: 3, wantStatus: ReviewStatusFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := &fakeJobRepository{}
+			runner := NewRunner(&fakeConfigStore{cfg: cfg, active: true}, repo, &fakePayloadStore{}, PromptScannerFunc(func(context.Context, ActiveEndpoint, string, []string) (*NormalizedResult, error) {
+				return nil, &GuardError{Code: ErrorCodeUnavailable, Retryable: true}
+			}), NewAtomicMetrics())
+			err := runner.processReview(context.Background(), cfg, endpoint, reviewEvent(test.attempts))
+			require.Error(t, err)
+			require.Equal(t, test.wantStatus, repo.reviewUpdated.Status)
+			if test.wantStatus == ReviewStatusQueued {
+				require.NotNil(t, repo.reviewUpdated.NextAttemptAt)
 			} else {
-				require.Equal(t, ErrorCodeUnavailable, repo.completedReview.ErrorCode)
-				require.Equal(t, 1, repo.completeCount)
+				require.NotNil(t, repo.reviewUpdated.CompletedAt)
 			}
 		})
 	}

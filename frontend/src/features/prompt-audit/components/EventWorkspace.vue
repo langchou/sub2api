@@ -35,6 +35,13 @@
           <option value="critical">{{ t('admin.promptAudit.riskLevels.critical') }}</option>
         </select>
       </label>
+      <label class="text-xs text-gray-600 dark:text-dark-200">
+        <span>{{ t('admin.promptAudit.events.reviewFilter') }}</span>
+        <select v-model="localFilters.review_result" class="input mt-1 w-full" data-test="review-result-filter" :aria-label="t('admin.promptAudit.events.reviewFilter')" @change="filtersChanged">
+          <option value="">{{ t('common.all') }}</option>
+          <option v-for="value in REVIEW_FILTERS" :key="value" :value="value">{{ t(`admin.promptAudit.events.reviewOptions.${value}`) }}</option>
+        </select>
+      </label>
       <FilterInput v-model="localFilters.endpoint" :label="t('admin.promptAudit.events.endpoint')" @change="filtersChanged" />
       <FilterInput v-model="localFilters.group_id" :label="t('admin.promptAudit.events.groupId')" type="number" @change="filtersChanged" />
       <FilterInput v-model="localFilters.user_id" :label="t('admin.promptAudit.events.userId')" type="number" @change="filtersChanged" />
@@ -96,7 +103,7 @@
                 <span v-if="event.review.result" class="rounded-full px-2 py-0.5 text-xs font-medium" :class="decisionClass(event.review.result.decision)">
                   {{ formatDecisionRisk(event.review.result.decision, event.review.result.risk_level) }}
                 </span>
-                <span v-else class="text-xs text-red-600 dark:text-red-300">{{ event.review.error_code || t('admin.promptAudit.events.reviewFailed') }}</span>
+                <span v-else class="text-xs" :class="reviewStatusClass(event.review.status)">{{ reviewOutcomeText(event.review) }}</span>
               </div>
               <p class="mt-2 max-w-48 truncate text-xs text-gray-500" :title="formatCategories(event.categories)">{{ formatCategories(event.categories) }}</p>
             </td>
@@ -117,7 +124,7 @@
 import { computed, defineComponent, h, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Pagination from '@/components/common/Pagination.vue'
-import type { PromptAuditEvent, PromptEventFilters } from '../types'
+import type { PromptAuditEvent, PromptAuditReviewOutcome, PromptEventFilters } from '../types'
 import { cloneData, emptyEventFilters, SCANNER_CATALOG } from '../viewModel'
 
 const props = defineProps<{
@@ -200,6 +207,7 @@ function decisionClass(decision: string): string {
 }
 const DECISIONS = new Set(['pass', 'flag', 'critical'])
 const RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical'])
+const REVIEW_FILTERS = ['queued', 'processing', 'pass', 'flag', 'critical', 'failed'] as const
 
 function translateDecision(decision: string): string {
   return DECISIONS.has(decision) ? t(`admin.promptAudit.decisions.${decision}`) : decision
@@ -218,5 +226,14 @@ function formatDecisionRisk(decision: string, riskLevel: string): string {
 function formatCategories(categories: string[]): string {
   if (!categories.length) return '—'
   return categories.map(translateCategory).join(', ')
+}
+function reviewOutcomeText(review: PromptAuditReviewOutcome): string {
+  const label = t(`admin.promptAudit.events.reviewOptions.${review.status}`)
+  return review.status === 'failed' && review.error_code ? `${label} · ${review.error_code}` : label
+}
+function reviewStatusClass(status: PromptAuditReviewOutcome['status']): string {
+  if (status === 'failed') return 'text-red-600 dark:text-red-300'
+  if (status === 'processing') return 'text-primary-600 dark:text-primary-300'
+  return 'text-gray-500 dark:text-dark-300'
 }
 </script>

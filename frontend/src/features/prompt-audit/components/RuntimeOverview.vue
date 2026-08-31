@@ -51,6 +51,14 @@
             <span class="mx-1.5 text-gray-300 dark:text-dark-600">·</span>
             {{ t('admin.promptAudit.runtime.deliveryTotals', { enqueued: runtime.enqueued_total, dropped: runtime.dropped_total, processed: runtime.processed_total, failed: runtime.failed_total }) }}
           </p>
+          <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-dark-400">
+            {{ t('admin.promptAudit.runtime.reviewQueueBreakdown', {
+              queued: runtime.review_queue.queued,
+              processing: runtime.review_queue.processing,
+              completed: runtime.review_queue.completed,
+              failed: runtime.review_queue.failed,
+            }) }}
+          </p>
         </div>
         <div class="rounded-xl border border-gray-100 px-4 py-3 dark:border-dark-700/60 dark:bg-dark-900/20">
           <h3 class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.runtime.latest') }}</h3>

@@ -26,8 +26,11 @@ const (
 	EndpointRolePrimary = "primary"
 	EndpointRoleReview  = "review"
 
-	ReviewStatusCompleted = "completed"
-	ReviewStatusFailed    = "failed"
+	ReviewStatusQueued     = "queued"
+	ReviewStatusProcessing = "processing"
+	ReviewStatusCompleted  = "completed"
+	ReviewStatusFailed     = "failed"
+	DefaultReviewAttempts  = 3
 )
 
 type Mode string
@@ -144,12 +147,20 @@ type NormalizedResult struct {
 	ChunkTotal        int                `json:"chunk_total"`
 	LatencyMS         int                `json:"latency_ms"`
 	UnknownCategories []string           `json:"unknown_categories,omitempty"`
+	ReviewInput       string             `json:"-"`
 }
 
 type ReviewOutcome struct {
-	Status    string            `json:"status"`
-	Result    *NormalizedResult `json:"result,omitempty"`
-	ErrorCode string            `json:"error_code,omitempty"`
+	Status              string            `json:"status"`
+	Result              *NormalizedResult `json:"result,omitempty"`
+	ErrorCode           string            `json:"error_code,omitempty"`
+	Attempts            int               `json:"attempts,omitempty"`
+	MaxAttempts         int               `json:"max_attempts,omitempty"`
+	ClaimVersion        int64             `json:"claim_version,omitempty"`
+	QueuedAt            *time.Time        `json:"queued_at,omitempty"`
+	NextAttemptAt       *time.Time        `json:"next_attempt_at,omitempty"`
+	ProcessingStartedAt *time.Time        `json:"processing_started_at,omitempty"`
+	CompletedAt         *time.Time        `json:"completed_at,omitempty"`
 }
 
 type PromptDecision struct {
@@ -242,6 +253,13 @@ type QueueStats struct {
 	Active     int64 `json:"active"`
 }
 
+type ReviewQueueStats struct {
+	Queued     int64 `json:"queued"`
+	Processing int64 `json:"processing"`
+	Completed  int64 `json:"completed"`
+	Failed     int64 `json:"failed"`
+}
+
 type RuntimeSnapshot struct {
 	ProcessStatus         string                 `json:"process_status"`
 	EffectiveMode         Mode                   `json:"effective_mode"`
@@ -254,6 +272,7 @@ type RuntimeSnapshot struct {
 	WorkerHeartbeatAt     *time.Time             `json:"worker_heartbeat_at,omitempty"`
 	QueueCapacity         int                    `json:"queue_capacity"`
 	Queue                 QueueStats             `json:"queue"`
+	ReviewQueue           ReviewQueueStats       `json:"review_queue"`
 	ProcessedTotal        int64                  `json:"processed_total"`
 	FailedTotal           int64                  `json:"failed_total"`
 	EnqueuedTotal         int64                  `json:"enqueued_total"`

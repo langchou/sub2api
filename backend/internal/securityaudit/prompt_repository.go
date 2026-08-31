@@ -76,6 +76,11 @@ type JobRepository interface {
 	Fail(ctx context.Context, jobID, claimVersion int64, code, message string) error
 	ReclaimStale(ctx context.Context, stagingBefore, processingBefore time.Time, limit int) (int64, error)
 	QueueStats(ctx context.Context) (QueueStats, error)
+	ClaimNextReview(ctx context.Context, now time.Time) (*Event, bool, error)
+	RefreshReviewLease(ctx context.Context, eventID, claimVersion int64, now time.Time) error
+	UpdateReview(ctx context.Context, eventID, claimVersion int64, outcome *ReviewOutcome) error
+	ReclaimStaleReviews(ctx context.Context, processingBefore time.Time, limit int) (int64, error)
+	ReviewQueueStats(ctx context.Context) (ReviewQueueStats, error)
 	RecordBlocking(ctx context.Context, snapshot PromptSnapshot, configVersion int64, result *NormalizedResult, storePassEvents bool) (*Event, error)
 }
 
@@ -280,6 +285,124 @@ func (r *PostgreSQLRepository) QueueStats(ctx context.Context) (QueueStats, erro
 	return stats, rows.Err()
 }
 
+func (r *PostgreSQLRepository) ClaimNextReview(ctx context.Context, now time.Time) (*Event, bool, error) {
+	row := r.db.QueryRowContext(ctx, `
+		WITH candidate AS (
+			SELECT id FROM prompt_audit_events
+			WHERE review_result->>'status'='queued'
+			  AND COALESCE((review_result->>'next_attempt_at')::timestamptz, created_at) <= $1
+			ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1
+		)
+		UPDATE prompt_audit_events AS e
+		SET review_result=e.review_result || jsonb_build_object(
+			'status','processing',
+			'attempts',COALESCE((e.review_result->>'attempts')::int,0)+1,
+			'max_attempts',COALESCE((e.review_result->>'max_attempts')::int,$2),
+			'claim_version',COALESCE((e.review_result->>'claim_version')::bigint,0)+1,
+			'processing_started_at',$1
+		)
+		FROM candidate WHERE e.id=candidate.id
+		RETURNING `+eventColumns("e")+`,e.review_input`, now.UTC(), DefaultReviewAttempts)
+	event, err := scanEvent(row, false, true)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	return event, err == nil, err
+}
+
+func (r *PostgreSQLRepository) RefreshReviewLease(ctx context.Context, eventID, claimVersion int64, now time.Time) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE prompt_audit_events
+		SET review_result=jsonb_set(review_result,'{processing_started_at}',to_jsonb($3::timestamptz),true)
+		WHERE id=$1 AND review_result->>'status'='processing'
+		  AND COALESCE((review_result->>'claim_version')::bigint,0)=$2`, eventID, claimVersion, now.UTC())
+	return requireOneRow(result, err, ErrLeaseLost)
+}
+
+func (r *PostgreSQLRepository) UpdateReview(ctx context.Context, eventID, claimVersion int64, outcome *ReviewOutcome) error {
+	if outcome == nil {
+		return errors.New("prompt audit review outcome required")
+	}
+	if outcome.Result != nil {
+		result := *outcome.Result
+		result.ScannerEvidence = make(map[string]string, len(outcome.Result.ScannerEvidence))
+		for key, value := range outcome.Result.ScannerEvidence {
+			result.ScannerEvidence[key] = RedactPreview(value, 160)
+		}
+		outcome = cloneReviewOutcome(outcome)
+		outcome.Result = &result
+	}
+	raw, err := json.Marshal(outcome)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE prompt_audit_events SET review_result=$3::jsonb
+		WHERE id=$1 AND review_result->>'status'='processing'
+		  AND COALESCE((review_result->>'claim_version')::bigint,0)=$2`, eventID, claimVersion, raw)
+	return requireOneRow(result, err, ErrLeaseLost)
+}
+
+func (r *PostgreSQLRepository) ReclaimStaleReviews(ctx context.Context, processingBefore time.Time, limit int) (int64, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	result, err := r.db.ExecContext(ctx, `
+		WITH stale AS (
+			SELECT id FROM prompt_audit_events
+			WHERE review_result->>'status'='processing'
+			  AND (review_result->>'processing_started_at')::timestamptz < $1
+			ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $2
+		)
+		UPDATE prompt_audit_events AS e
+		SET review_result=(e.review_result-'processing_started_at') || jsonb_build_object(
+			'status',CASE
+				WHEN COALESCE((e.review_result->>'attempts')::int,0) < COALESCE((e.review_result->>'max_attempts')::int,$3)
+				THEN 'queued' ELSE 'failed' END,
+			'next_attempt_at',CASE
+				WHEN COALESCE((e.review_result->>'attempts')::int,0) < COALESCE((e.review_result->>'max_attempts')::int,$3)
+				THEN NOW() ELSE NULL END,
+			'completed_at',CASE
+				WHEN COALESCE((e.review_result->>'attempts')::int,0) >= COALESCE((e.review_result->>'max_attempts')::int,$3)
+				THEN NOW() ELSE NULL END,
+			'error_code','review_lease_expired'
+		)
+		FROM stale WHERE e.id=stale.id`, processingBefore.UTC(), limit, DefaultReviewAttempts)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (r *PostgreSQLRepository) ReviewQueueStats(ctx context.Context) (ReviewQueueStats, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT review_result->>'status',COUNT(*) FROM prompt_audit_events
+		WHERE review_result->>'status' <> '' GROUP BY review_result->>'status'`)
+	if err != nil {
+		return ReviewQueueStats{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	var stats ReviewQueueStats
+	for rows.Next() {
+		var status string
+		var count int64
+		if err := rows.Scan(&status, &count); err != nil {
+			return ReviewQueueStats{}, err
+		}
+		switch status {
+		case ReviewStatusQueued:
+			stats.Queued = count
+		case ReviewStatusProcessing:
+			stats.Processing = count
+		case ReviewStatusCompleted:
+			stats.Completed = count
+		case ReviewStatusFailed:
+			stats.Failed = count
+		}
+	}
+	return stats, rows.Err()
+}
+
 func (r *PostgreSQLRepository) RecordBlocking(ctx context.Context, snapshot PromptSnapshot, configVersion int64, result *NormalizedResult, storePassEvents bool) (*Event, error) {
 	if result == nil {
 		return nil, errors.New("prompt guard result required")
@@ -355,9 +478,9 @@ func insertEvent(ctx context.Context, queryer sqlQueryer, jobID int64, snapshot 
 			group_id,group_name,provider,endpoint,protocol,model,prompt_hash,redacted_preview,stage,
 			decision,risk_level,action,categories,matched_scanners,scanner_scores,scanner_evidence,
 			scanner_backend,scanner_version,guard_endpoint_id,policy_id,policy_version,config_version,chunk_total,latency_ms,
-			full_prompt,review_result
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-			$20::jsonb,$21::jsonb,$22::jsonb,$23::jsonb,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33::jsonb)
+				full_prompt,review_result,review_input
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+				$20::jsonb,$21::jsonb,$22::jsonb,$23::jsonb,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33::jsonb,$34)
 		RETURNING `+eventDetailColumns("prompt_audit_events"),
 		jobID, snapshot.RequestID, nullableID(snapshot.UserID), snapshot.UsernameSnapshot, snapshot.UserEmailSnapshot,
 		nullableID(snapshot.APIKeyID), snapshot.APIKeyNameSnapshot, snapshot.GroupID, snapshot.GroupName,
@@ -365,8 +488,16 @@ func insertEvent(ctx context.Context, queryer sqlQueryer, jobID int64, snapshot 
 		snapshot.RedactedPreview, normalizeStage(snapshot.Stage), string(result.Decision), string(result.RiskLevel),
 		string(result.Action), categories, matched, scores, evidenceJSON, result.ScannerBackend, result.ScannerVersion,
 		result.GuardEndpointID, result.PolicyID, result.PolicyVersion, configVersion, result.ChunkTotal, result.LatencyMS,
-		snapshot.FullPrompt, reviewJSON)
+		snapshot.FullPrompt, reviewJSON, BuildFullPrompt(result.ReviewInput, MaxInputLimit))
 	return scanEvent(row, true)
+}
+
+func cloneReviewOutcome(outcome *ReviewOutcome) *ReviewOutcome {
+	if outcome == nil {
+		return nil
+	}
+	clone := *outcome
+	return &clone
 }
 
 type rowScanner interface{ Scan(...any) error }
