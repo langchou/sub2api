@@ -30,7 +30,7 @@ export default {
     viewChangelog: '查看更新日志',
     refresh: '刷新',
     sourceMode: '源码构建',
-    sourceModeHint: '源码构建请使用 git pull 更新',
+    sourceModeHint: '自定义构建请部署新镜像更新',
     updateNow: '立即更新',
     updating: '正在更新...',
     updateComplete: '更新完成',

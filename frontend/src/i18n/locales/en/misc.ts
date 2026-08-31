@@ -30,7 +30,7 @@ export default {
     viewChangelog: 'View Changelog',
     refresh: 'Refresh',
     sourceMode: 'Source Build',
-    sourceModeHint: 'Source build, use git pull to update',
+    sourceModeHint: 'Custom build, deploy a new image to update',
     updateNow: 'Update Now',
     updating: 'Updating...',
     updateComplete: 'Update Complete',
