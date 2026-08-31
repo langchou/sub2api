@@ -324,9 +324,6 @@ func validateStorageConfig(cfg storageConfig) error {
 	if cfg.Enabled && enabledReview > 0 && cfg.BlockingEnabled {
 		return infraerrors.BadRequest(ErrorCodeReviewAsyncOnly, "8B 复审仅支持异步审计模式")
 	}
-	if cfg.Enabled && enabledReview > 0 && cfg.WorkerCount != 1 {
-		return infraerrors.BadRequest(ErrorCodeReviewSingleWorker, "启用 8B 复审时 Worker 数量必须为 1")
-	}
 	return nil
 }
 

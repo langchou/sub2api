@@ -20,7 +20,6 @@ const (
 	ErrorCodeEncryptionKeyRequired = "prompt_audit_encryption_key_required"
 	ErrorCodeRequiresEnabled       = "prompt_guard_requires_audit_enabled"
 	ErrorCodeReviewAsyncOnly       = "prompt_audit_review_async_only"
-	ErrorCodeReviewSingleWorker    = "prompt_audit_review_single_worker"
 
 	DefaultGuardModel = "sileader/qwen3guard:0.6b"
 

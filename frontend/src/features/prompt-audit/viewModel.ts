@@ -95,7 +95,7 @@ export function hasEnabledReview(draft: PromptAuditDraft): boolean {
 
 export function enforceReviewConstraints(draft: PromptAuditDraft): PromptAuditDraft {
   if (!hasEnabledReview(draft)) return draft
-  return { ...draft, blocking_enabled: false, worker_count: 1 }
+  return { ...draft, blocking_enabled: false }
 }
 
 export function draftFingerprint(draft: PromptAuditDraft | null): string {

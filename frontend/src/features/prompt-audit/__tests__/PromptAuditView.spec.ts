@@ -149,20 +149,20 @@ describe('PromptAuditView', () => {
     expect(wrapper.html()).not.toContain('PROMPT_AUDIT_CANARY_SECRET_DO_NOT_PERSIST')
   })
 
-  it('locks enabled review to asynchronous single-worker configuration', async () => {
+  it('locks enabled review to asynchronous mode while preserving primary workers', async () => {
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-test="tab-config"]').trigger('click')
     await wrapper.get('[data-test="enable-review"]').trigger('click')
     expect(wrapper.get('[data-test="blocking-toggle"]').attributes()).toHaveProperty('disabled')
     const policyDraft = wrapper.getComponent(PolicyStub).props('draft') as PromptAuditConfig
-    expect(policyDraft.worker_count).toBe(1)
+    expect(policyDraft.worker_count).toBe(4)
     expect(policyDraft.blocking_enabled).toBe(false)
     await wrapper.get('[data-test="save-config"]').trigger('click')
     await flushPromises()
     expect(mocks.updateConfig).toHaveBeenCalledWith(expect.objectContaining({
       blocking_enabled: false,
-      worker_count: 1,
+      worker_count: 4,
       endpoints: expect.arrayContaining([expect.objectContaining({ role: 'review' })]),
     }))
   })

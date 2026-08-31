@@ -105,8 +105,8 @@ describe('Prompt Audit components', () => {
     const reviewDraft = { ...draft, worker_count: 4, endpoints: [{ ...endpoint(), role: 'review' as const }] }
     await wrapper.setProps({ draft: reviewDraft })
     const workerInput = wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.policy.workerCount"]')
-    expect(workerInput.element.value).toBe('1')
-    expect(workerInput.attributes()).toHaveProperty('disabled')
+    expect(workerInput.element.value).toBe('4')
+    expect(workerInput.attributes()).not.toHaveProperty('disabled')
   })
 
   it('keeps identity fields separate, supports selection, and opens filter deletion from the toolbar', async () => {

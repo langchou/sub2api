@@ -63,7 +63,7 @@ describe('Prompt Audit view model', () => {
     expect(buildUpdateRequest(draft)).toMatchObject({ blocking_latest_turn_only: true })
   })
 
-  it('saves endpoint roles and forces enabled review to asynchronous single-worker mode', () => {
+  it('saves endpoint roles and keeps primary workers while forcing asynchronous mode', () => {
     const draft = configToDraft(config())
     draft.blocking_enabled = true
     draft.worker_count = 4
@@ -73,7 +73,7 @@ describe('Prompt Audit view model', () => {
     })
     expect(buildUpdateRequest(draft)).toMatchObject({
       blocking_enabled: false,
-      worker_count: 1,
+      worker_count: 4,
       endpoints: [{ role: 'primary' }, { role: 'review' }],
     })
   })

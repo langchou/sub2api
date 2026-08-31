@@ -53,7 +53,7 @@ export default {
     policy: {
       title: '审计策略', description: '配置适用分组、九类输入风险、Worker 与队列边界。', scope: '适用范围', allGroups: '全部分组', selectedGroups: '指定分组',
       searchGroups: '搜索分组', noGroups: '没有匹配分组', missingGroups: '配置中包含已删除的分组 ID', selectedCount: '已选择 {count} 个分组',
-      scanners: 'Qwen3Guard 输入风险分类', workerCount: 'Worker 数量', reviewWorkerHint: '启用复审节点时固定为 1 个 Worker。', queueCapacity: '持久队列容量', strategy: '节点策略', strategyHint: '初审节点按配置顺序尝试；复审节点不参与初审故障切换。',
+      scanners: 'Qwen3Guard 输入风险分类', workerCount: 'Worker 数量', queueCapacity: '持久队列容量', strategy: '节点策略', strategyHint: '初审节点按配置顺序尝试；复审节点不参与初审故障切换。',
     },
     saveBar: { enabled: '启用提示词审计', blocking: '同步阻止', reviewAsyncOnly: '启用 8B 复审时仅支持异步审计。', blockingLatestTurnOnly: '仅审最新输入和上一轮输出', storePass: '保存安全事件', dirty: '有未保存的更改', synced: '配置已同步' },
     blockingConfirm: {
@@ -95,7 +95,7 @@ export default {
       loadConfig: '无法加载提示词审计配置。', loadRuntime: '无法加载提示词审计运行态。', loadGroups: '无法加载分组列表。', loadEvents: '无法加载审计事件。', loadDetail: '无法加载事件详情。', saveConfig: '配置保存失败。', probe: '节点探测失败。', delete: '事件删除失败。', previewDelete: '无法生成删除预览，请检查时间范围。', deleteConfirmation: '删除确认无效或已过期，请重新预览。',
       prompt_audit_config_conflict: '配置已被其他管理员更新。请重新加载服务端配置，再决定如何合并本地草稿。',
       prompt_audit_encryption_key_required: '未配置固定加密密钥，审计节点 API Key 将在服务重启后失效。请先设置 TOTP_ENCRYPTION_KEY 环境变量并重启服务。',
-      prompt_guard_requires_audit_enabled: '开启同步阻止前必须先启用提示词审计。', prompt_audit_invalid_endpoint: '审计节点配置无效。', prompt_audit_invalid_endpoint_role: '审计节点用途无效。', prompt_audit_review_endpoint_duplicate: '最多只能配置一个复审节点。', prompt_audit_review_async_only: '启用 8B 复审时仅支持异步审计。', prompt_audit_review_single_worker: '启用 8B 复审时 Worker 数量必须为 1。', prompt_audit_endpoint_required: '启用审计前至少需要一个启用的初审节点。', prompt_audit_groups_required: '指定分组模式至少需要选择一个分组。', prompt_audit_scanners_required: '至少需要启用一个风险分类。',
+      prompt_guard_requires_audit_enabled: '开启同步阻止前必须先启用提示词审计。', prompt_audit_invalid_endpoint: '审计节点配置无效。', prompt_audit_invalid_endpoint_role: '审计节点用途无效。', prompt_audit_review_endpoint_duplicate: '最多只能配置一个复审节点。', prompt_audit_review_async_only: '启用 8B 复审时仅支持异步审计。', prompt_audit_endpoint_required: '启用审计前至少需要一个启用的初审节点。', prompt_audit_groups_required: '指定分组模式至少需要选择一个分组。', prompt_audit_scanners_required: '至少需要启用一个风险分类。',
     },
   },
 }
