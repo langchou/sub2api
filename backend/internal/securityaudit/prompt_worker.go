@@ -147,48 +147,32 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 	if len(endpoints) == 0 {
 		return r.finishFailure(ctx, job, &GuardError{Code: "no_enabled_endpoint", Retryable: true})
 	}
-	chunks := SplitRunes(scanText, minimumInputLimit(endpoints))
-	results := make([]*NormalizedResult, 0, len(chunks))
-	started := r.clock.Now()
-	for index, chunk := range chunks {
-		if err := r.repo.RefreshLease(ctx, job.ID, job.ClaimVersion, r.clock.Now()); err != nil {
+	aggregated, err := r.scanPrompt(ctx, workerID, job, cfg.Scanners, endpoints, scanText, "primary", true)
+	if err != nil {
+		var guardErr *GuardError
+		if !errors.As(err, &guardErr) {
 			return err
 		}
-		chunkStarted := r.clock.Now()
-		LogInfo(EventChunkStarted, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks), "chunk_chars": len([]rune(chunk)), "input_chars": job.Snapshot.PromptLength, "input_limit": minimumInputLimit(endpoints), "status": "started"}))
-		result, scanErr := scanWithFailover(ctx, r.scanner, cfg.Scanners, endpoints, chunk, r.metrics)
-		if scanErr != nil {
-			LogWarn(EventChunkFailed, mergeLogFields(baseFields, map[string]any{
-				"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks),
-				"chunk_chars": len([]rune(chunk)), "input_chars": job.Snapshot.PromptLength,
-				"input_limit": minimumInputLimit(endpoints), "latency_ms": r.clock.Now().Sub(chunkStarted).Milliseconds(),
-				"error_code": guardErrorCode(scanErr), "status": "failed",
+		return r.finishFailure(ctx, job, guardErr)
+	}
+	if reviewEndpoint, ok := cfg.ReviewEndpoint(); ok && aggregated.Decision != EventPass {
+		LogInfo(EventReviewStarted, mergeLogFields(baseFields, map[string]any{
+			"worker_id": workerID, "guard_endpoint_id": reviewEndpoint.ID, "decision": aggregated.Decision, "status": "started",
+		}))
+		review, reviewErr := r.scanPrompt(ctx, workerID, job, cfg.Scanners, []ActiveEndpoint{reviewEndpoint}, scanText, "review", false)
+		if reviewErr != nil {
+			job.Review = &ReviewOutcome{Status: ReviewStatusFailed, ErrorCode: guardErrorCode(reviewErr)}
+			LogWarn(EventReviewFailed, mergeLogFields(baseFields, map[string]any{
+				"worker_id": workerID, "guard_endpoint_id": reviewEndpoint.ID, "status": "failed", "error_code": job.Review.ErrorCode,
 			}))
-			r.observeAsyncFailure(scanErr, r.clock.Now().Sub(started))
-			return r.finishFailure(ctx, job, scanErr)
-		}
-		results = append(results, result)
-		LogInfo(EventChunkCompleted, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks), "guard_endpoint_id": result.GuardEndpointID, "action": result.Action, "latency_ms": r.clock.Now().Sub(chunkStarted).Milliseconds(), "status": "completed"}))
-		if result.Action == ActionBlock {
-			break
+		} else {
+			job.Review = &ReviewOutcome{Status: ReviewStatusCompleted, Result: review}
+			LogInfo(EventReviewCompleted, mergeLogFields(baseFields, map[string]any{
+				"worker_id": workerID, "guard_endpoint_id": reviewEndpoint.ID, "decision": review.Decision,
+				"risk_level": review.RiskLevel, "action": review.Action, "latency_ms": review.LatencyMS, "status": "completed",
+			}))
 		}
 	}
-	aggregated, err := AggregateResults(results, r.clock.Now().Sub(started))
-	if err != nil {
-		if r.metrics != nil {
-			r.metrics.Observe(DecisionInvalid, r.clock.Now().Sub(started))
-		}
-		return r.finishFailure(ctx, job, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err})
-	}
-	aggregated.ChunkTotal = len(chunks)
-	if r.metrics != nil {
-		r.metrics.Observe(decisionKindForResult(aggregated), r.clock.Now().Sub(started))
-	}
-	LogInfo(EventChunksAggregated, mergeLogFields(baseFields, map[string]any{
-		"worker_id": workerID, "decision": aggregated.Decision, "risk_level": aggregated.RiskLevel,
-		"action": aggregated.Action, "chunk_total": aggregated.ChunkTotal,
-		"latency_ms": aggregated.LatencyMS, "guard_endpoint_id": aggregated.GuardEndpointID, "status": "completed",
-	}))
 	event, err := r.repo.Complete(ctx, job, aggregated, cfg.StorePassEvents)
 	if err != nil {
 		return err
@@ -201,6 +185,70 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 		LogWarn(EventFindingRecorded, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "event_id": event.ID, "decision": aggregated.Decision, "risk_level": aggregated.RiskLevel, "action": aggregated.Action, "guard_endpoint_id": aggregated.GuardEndpointID, "status": "recorded"}))
 	}
 	return nil
+}
+
+func (r *Runner) scanPrompt(ctx context.Context, workerID int, job *Job, scanners []string, endpoints []ActiveEndpoint, scanText, scanStage string, observeMetrics bool) (*NormalizedResult, error) {
+	baseFields := jobLogFields(job)
+	inputLimit := minimumInputLimit(endpoints)
+	chunks := SplitRunes(scanText, inputLimit)
+	results := make([]*NormalizedResult, 0, len(chunks))
+	started := r.clock.Now()
+	for index, chunk := range chunks {
+		if err := r.repo.RefreshLease(ctx, job.ID, job.ClaimVersion, r.clock.Now()); err != nil {
+			return nil, err
+		}
+		chunkStarted := r.clock.Now()
+		LogInfo(EventChunkStarted, mergeLogFields(baseFields, map[string]any{
+			"worker_id": workerID, "scan_stage": scanStage, "chunk_index": index + 1, "chunk_total": len(chunks),
+			"chunk_chars": len([]rune(chunk)), "input_chars": job.Snapshot.PromptLength, "input_limit": inputLimit, "status": "started",
+		}))
+		var metrics Metrics
+		if observeMetrics {
+			metrics = r.metrics
+		}
+		result, scanErr := scanWithFailover(ctx, r.scanner, scanners, endpoints, chunk, metrics)
+		if scanErr != nil {
+			LogWarn(EventChunkFailed, mergeLogFields(baseFields, map[string]any{
+				"worker_id": workerID, "scan_stage": scanStage, "chunk_index": index + 1, "chunk_total": len(chunks),
+				"chunk_chars": len([]rune(chunk)), "input_chars": job.Snapshot.PromptLength, "input_limit": inputLimit,
+				"latency_ms": r.clock.Now().Sub(chunkStarted).Milliseconds(), "error_code": guardErrorCode(scanErr), "status": "failed",
+			}))
+			if observeMetrics {
+				r.observeAsyncFailure(scanErr, r.clock.Now().Sub(started))
+			}
+			var guardErr *GuardError
+			if !errors.As(scanErr, &guardErr) {
+				scanErr = &GuardError{Code: guardErrorCode(scanErr), Cause: scanErr}
+			}
+			return nil, scanErr
+		}
+		results = append(results, result)
+		LogInfo(EventChunkCompleted, mergeLogFields(baseFields, map[string]any{
+			"worker_id": workerID, "scan_stage": scanStage, "chunk_index": index + 1, "chunk_total": len(chunks),
+			"guard_endpoint_id": result.GuardEndpointID, "action": result.Action,
+			"latency_ms": r.clock.Now().Sub(chunkStarted).Milliseconds(), "status": "completed",
+		}))
+		if result.Action == ActionBlock {
+			break
+		}
+	}
+	aggregated, err := AggregateResults(results, r.clock.Now().Sub(started))
+	if err != nil {
+		if observeMetrics && r.metrics != nil {
+			r.metrics.Observe(DecisionInvalid, r.clock.Now().Sub(started))
+		}
+		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
+	}
+	aggregated.ChunkTotal = len(chunks)
+	if observeMetrics && r.metrics != nil {
+		r.metrics.Observe(decisionKindForResult(aggregated), r.clock.Now().Sub(started))
+	}
+	LogInfo(EventChunksAggregated, mergeLogFields(baseFields, map[string]any{
+		"worker_id": workerID, "scan_stage": scanStage, "decision": aggregated.Decision, "risk_level": aggregated.RiskLevel,
+		"action": aggregated.Action, "chunk_total": aggregated.ChunkTotal, "latency_ms": aggregated.LatencyMS,
+		"guard_endpoint_id": aggregated.GuardEndpointID, "status": "completed",
+	}))
+	return aggregated, nil
 }
 
 func (r *Runner) observeAsyncFailure(err error, latency time.Duration) {
@@ -267,7 +315,8 @@ func (r *Runner) reclaimer(ctx context.Context) {
 			return
 		case <-ticker.C:
 			now := r.clock.Now()
-			count, err := r.repo.ReclaimStale(ctx, now.Add(-2*time.Minute), now.Add(-90*time.Second), 100)
+			processingLease := time.Duration(MaxReviewTimeoutMS)*time.Millisecond + 30*time.Second
+			count, err := r.repo.ReclaimStale(ctx, now.Add(-2*time.Minute), now.Add(-processingLease), 100)
 			if err != nil {
 				r.setLastError("reclaim_failed", err.Error())
 				continue

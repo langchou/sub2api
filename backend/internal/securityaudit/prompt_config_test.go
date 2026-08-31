@@ -73,6 +73,35 @@ func TestConfigRejectsBlockingWithoutAudit(t *testing.T) {
 	require.Error(t, validateStorageConfig(storage))
 }
 
+func TestReviewEndpointIsSingleWorkerAsyncAndOldEndpointsStayPrimary(t *testing.T) {
+	legacy, err := ParseStorageConfig(`{"worker_count":4,"endpoints":[{"id":"old","name":"Old","protocol":"openai_compatible","base_url":"http://127.0.0.1:8080","timeout_ms":1000,"input_limit":1000,"enabled":true}]}`)
+	require.NoError(t, err)
+	require.Equal(t, EndpointRolePrimary, legacy.Endpoints[0].Role)
+
+	cfg := DefaultStorageConfig()
+	cfg.Enabled = true
+	cfg.WorkerCount = 1
+	cfg.Endpoints = []StorageEndpoint{
+		{ID: "primary", Name: "Primary", Role: EndpointRolePrimary, Protocol: "openai_compatible", BaseURL: "https://guard.example.com", TimeoutMS: 3000, InputLimit: 4000, Enabled: true},
+		{ID: "review", Name: "Review", Role: EndpointRoleReview, Protocol: "openai_compatible", BaseURL: "http://qwen3guard-review:8080", TimeoutMS: 120000, InputLimit: 3000, Enabled: true},
+	}
+	require.NoError(t, validateStorageConfig(cfg))
+	active, err := ActiveFromStorage(cfg, true, prefixEncryptor{})
+	require.NoError(t, err)
+	require.Equal(t, "primary", active.EnabledEndpoints()[0].ID)
+	review, ok := active.ReviewEndpoint()
+	require.True(t, ok)
+	require.Equal(t, "review", review.ID)
+
+	cfg.WorkerCount = 2
+	err = validateStorageConfig(cfg)
+	require.Equal(t, ErrorCodeReviewSingleWorker, infraerrors.Reason(err))
+	cfg.WorkerCount = 1
+	cfg.BlockingEnabled = true
+	err = validateStorageConfig(cfg)
+	require.Equal(t, ErrorCodeReviewAsyncOnly, infraerrors.Reason(err))
+}
+
 func TestPublicConfigNeverMarshalsToken(t *testing.T) {
 	storage := DefaultStorageConfig()
 	storage.Endpoints = []StorageEndpoint{{ID: "one", Name: "One", Protocol: "openai_compatible", BaseURL: "http://127.0.0.1:8080", Model: DefaultGuardModel, TokenCiphertext: "GUARD_TOKEN_CANARY_SECRET", TimeoutMS: 1000, InputLimit: 1000, Enabled: true}}

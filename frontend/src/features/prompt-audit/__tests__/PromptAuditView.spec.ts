@@ -21,7 +21,7 @@ vi.mock('vue-i18n', async () => {
 const baseConfig = (): PromptAuditConfig => ({
   enabled: true, blocking_enabled: false, blocking_latest_turn_only: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',
   worker_count: 4, queue_capacity: 100, scanners: SCANNER_CATALOG.map((item) => item.id), all_groups: true, group_ids: [],
-  endpoints: [{ id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000', model: 'guard-model', timeout_ms: 3000, input_limit: 4000, enabled: true, has_token: true, token_status: 'configured' }],
+  endpoints: [{ id: 'guard-1', name: 'Guard One', role: 'primary', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000', model: 'guard-model', timeout_ms: 3000, input_limit: 4000, enabled: true, has_token: true, token_status: 'configured' }],
   config_version: 7, updated_at: '2026-07-16T00:00:00Z', updated_by: 1, change_summary: '{}',
 })
 const runtime = (): PromptAuditRuntime => ({
@@ -36,7 +36,7 @@ const AppLayoutStub = { template: '<div><slot /></div>' }
 const RuntimeStub = defineComponent({ props: ['runtime', 'loading', 'error'], emits: ['refresh'], template: '<div data-test="runtime">{{ error }}</div>' })
 const EndpointStub = defineComponent({
   props: ['endpoints', 'probeResults', 'probingIds'], emits: ['update:endpoints', 'probe'],
-  template: '<div data-test="endpoint"><button data-test="inject-secret" @click="$emit(\'update:endpoints\', endpoints.map((e) => ({ ...e, token: \'PROMPT_AUDIT_CANARY_SECRET_DO_NOT_PERSIST\' })))">secret</button><button data-test="probe" @click="$emit(\'probe\', endpoints[0])">probe</button></div>',
+  template: '<div data-test="endpoint"><button data-test="inject-secret" @click="$emit(\'update:endpoints\', endpoints.map((e) => ({ ...e, token: \'PROMPT_AUDIT_CANARY_SECRET_DO_NOT_PERSIST\' })))">secret</button><button data-test="enable-review" @click="$emit(\'update:endpoints\', [...endpoints, { ...endpoints[0], id: \'review-1\', role: \'review\', token: \'\', has_token: false }])">review</button><button data-test="probe" @click="$emit(\'probe\', endpoints[0])">probe</button></div>',
 })
 const PolicyStub = defineComponent({ props: ['draft', 'groups'], emits: ['update:draft'], template: '<div data-test="policy" />' })
 const EventsStub = defineComponent({
@@ -147,6 +147,24 @@ describe('PromptAuditView', () => {
     const endpointProps = wrapper.getComponent(EndpointStub).props('endpoints') as Array<{ token: string }>
     expect(endpointProps[0].token).toBe('')
     expect(wrapper.html()).not.toContain('PROMPT_AUDIT_CANARY_SECRET_DO_NOT_PERSIST')
+  })
+
+  it('locks enabled review to asynchronous single-worker configuration', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+    await wrapper.get('[data-test="enable-review"]').trigger('click')
+    expect(wrapper.get('[data-test="blocking-toggle"]').attributes()).toHaveProperty('disabled')
+    const policyDraft = wrapper.getComponent(PolicyStub).props('draft') as PromptAuditConfig
+    expect(policyDraft.worker_count).toBe(1)
+    expect(policyDraft.blocking_enabled).toBe(false)
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig).toHaveBeenCalledWith(expect.objectContaining({
+      blocking_enabled: false,
+      worker_count: 1,
+      endpoints: expect.arrayContaining([expect.objectContaining({ role: 'review' })]),
+    }))
   })
 
   it('reports real probe progress/results and invalidates filter confirmation when filters change', async () => {

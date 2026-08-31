@@ -23,7 +23,7 @@ const config = (): PromptAuditConfig => ({
   all_groups: true,
   group_ids: [],
   endpoints: [{
-    id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000',
+    id: 'guard-1', name: 'Guard One', role: 'primary', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000',
     model: 'sileader/qwen3guard:0.6b', timeout_ms: 3000, input_limit: 4000, enabled: true,
     has_token: true, token_status: 'configured',
   }],
@@ -61,6 +61,21 @@ describe('Prompt Audit view model', () => {
     const draft = configToDraft(config())
     draft.blocking_latest_turn_only = true
     expect(buildUpdateRequest(draft)).toMatchObject({ blocking_latest_turn_only: true })
+  })
+
+  it('saves endpoint roles and forces enabled review to asynchronous single-worker mode', () => {
+    const draft = configToDraft(config())
+    draft.blocking_enabled = true
+    draft.worker_count = 4
+    draft.endpoints.push({
+      ...draft.endpoints[0], id: 'review-1', name: 'Review', role: 'review',
+      base_url: 'http://qwen3guard-review:8080', model: 'qwen3guard-gen-8b-q4_k_m', timeout_ms: 120000,
+    })
+    expect(buildUpdateRequest(draft)).toMatchObject({
+      blocking_enabled: false,
+      worker_count: 1,
+      endpoints: [{ role: 'primary' }, { role: 'review' }],
+    })
   })
 
   it('tracks dirty state from the full normalized save payload', () => {

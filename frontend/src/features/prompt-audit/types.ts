@@ -1,10 +1,12 @@
 export type PromptAuditMode = 'off' | 'async_audit' | 'blocking'
 export type PromptDecision = 'pass' | 'flag' | 'critical'
 export type PromptRiskLevel = 'low' | 'medium' | 'high' | 'critical'
+export type PromptAuditEndpointRole = 'primary' | 'review'
 
 export interface PromptAuditEndpoint {
   id: string
   name: string
+  role: PromptAuditEndpointRole
   protocol: 'openai_compatible'
   base_url: string
   model: string
@@ -58,6 +60,7 @@ export interface PromptAuditUpdateRequest {
   endpoints: Array<{
     id: string
     name: string
+    role: PromptAuditEndpointRole
     protocol: 'openai_compatible'
     base_url: string
     model: string
@@ -172,6 +175,31 @@ export interface PromptIssueSummary {
   end_rune?: number
 }
 
+export interface PromptAuditReviewResult {
+  decision: PromptDecision
+  risk_level: PromptRiskLevel
+  action: 'Allow' | 'Warn' | 'Block' | string
+  safety: string
+  categories: string[]
+  matched_scanners: string[]
+  scanner_scores: Record<string, number>
+  scanner_evidence: Record<string, string>
+  scanner_backend: string
+  scanner_version: string
+  guard_endpoint_id: string
+  policy_id: string
+  policy_version: number
+  chunk_total: number
+  latency_ms: number
+  unknown_categories?: string[]
+}
+
+export interface PromptAuditReviewOutcome {
+  status: 'completed' | 'failed'
+  result?: PromptAuditReviewResult
+  error_code?: string
+}
+
 export interface PromptAuditEvent {
   id: number
   job_id: number
@@ -192,6 +220,7 @@ export interface PromptAuditEvent {
   chunk_total: number
   latency_ms: number
   issue_summaries: PromptIssueSummary[]
+  review?: PromptAuditReviewOutcome
   created_at: string
 }
 

@@ -43,7 +43,7 @@ func openPromptAuditIntegrationDB(t *testing.T) *sql.DB {
 		);
 	`)
 	require.NoError(t, err)
-	for _, name := range []string{"181_prompt_audit.sql", "182_prompt_audit_full_prompt.sql"} {
+	for _, name := range []string{"181_prompt_audit.sql", "182_prompt_audit_full_prompt.sql", "232_langchou_prompt_audit_review.sql"} {
 		migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		require.NoError(t, err)
 		// The migration runner can retry an interrupted deployment; the migration
@@ -276,9 +276,13 @@ func TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction(t *testin
 	_, err = repo.Complete(ctx, firstClaim, integrationResult(EventCritical), true)
 	require.ErrorIs(t, err, ErrLeaseLost)
 
+	secondClaim.Review = &ReviewOutcome{Status: ReviewStatusCompleted, Result: integrationResult(EventPass)}
 	event, err := repo.Complete(ctx, secondClaim, integrationResult(EventCritical), true)
 	require.NoError(t, err)
 	require.NotNil(t, event)
+	require.NotNil(t, event.Review)
+	require.Equal(t, ReviewStatusCompleted, event.Review.Status)
+	require.Equal(t, EventPass, event.Review.Result.Decision)
 	var status string
 	var eventCount int
 	require.NoError(t, db.QueryRow(`SELECT status FROM prompt_audit_jobs WHERE id=$1`, secondClaim.ID).Scan(&status))

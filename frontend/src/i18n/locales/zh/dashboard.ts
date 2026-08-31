@@ -313,6 +313,8 @@ export default {
     accountCost: '成本',
     userBilled: '用户扣费',
     accountBilled: '账号计费',
+    equivalentQuota: '等效额度',
+    equivalentQuotaHint: '根据账号计费金额和页面取整后的用量百分比估算的总额度区间',
     resetNow: '现在',
     resetPending: '待刷新',
     accountMultiplier: '账号倍率',

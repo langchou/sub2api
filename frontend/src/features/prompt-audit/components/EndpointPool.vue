@@ -47,6 +47,9 @@
             <div class="min-w-0">
               <div class="flex min-w-0 items-center gap-2">
                 <p class="truncate font-semibold text-gray-950 dark:text-white">{{ endpoint.name }}</p>
+                <span data-test="endpoint-role" class="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 dark:bg-dark-800 dark:text-dark-300">
+                  {{ t(`admin.promptAudit.pool.roles.${endpoint.role}`) }}
+                </span>
                 <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="endpoint.enabled ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-dark-500'" aria-hidden="true" />
               </div>
               <p class="mt-0.5 truncate font-mono text-[11px] text-gray-500 dark:text-dark-400" :title="endpoint.base_url">{{ endpoint.base_url }}</p>
@@ -103,6 +106,13 @@
           <input v-model="editing.id" class="input w-full" required :disabled="editingIndex >= 0" :aria-label="t('admin.promptAudit.pool.id')" />
         </label>
         <label class="space-y-1 text-sm text-gray-700 dark:text-dark-200 sm:col-span-2">
+          <span>{{ t('admin.promptAudit.pool.role') }}</span>
+          <select :value="editing.role" class="input w-full" data-test="endpoint-role-select" :aria-label="t('admin.promptAudit.pool.role')" @change="setRole">
+            <option value="primary">{{ t('admin.promptAudit.pool.roles.primary') }}</option>
+            <option value="review" :disabled="hasOtherReview">{{ t('admin.promptAudit.pool.roles.review') }}</option>
+          </select>
+        </label>
+        <label class="space-y-1 text-sm text-gray-700 dark:text-dark-200 sm:col-span-2">
           <span>{{ t('admin.promptAudit.pool.baseUrl') }}</span>
           <input v-model="editing.base_url" class="input w-full" required inputmode="url" :aria-label="t('admin.promptAudit.pool.baseUrl')" />
         </label>
@@ -121,7 +131,7 @@
         </label>
         <label class="space-y-1 text-sm text-gray-700 dark:text-dark-200">
           <span>{{ t('admin.promptAudit.pool.timeout') }}</span>
-          <input v-model.number="editing.timeout_ms" class="input w-full" type="number" min="100" max="30000" required :aria-label="t('admin.promptAudit.pool.timeout')" />
+          <input v-model.number="editing.timeout_ms" class="input w-full" type="number" min="100" :max="editing.role === 'review' ? 180000 : 30000" required :aria-label="t('admin.promptAudit.pool.timeout')" />
         </label>
         <label class="space-y-1 text-sm text-gray-700 dark:text-dark-200">
           <span>{{ t('admin.promptAudit.pool.inputLimit') }}</span>
@@ -139,10 +149,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
-import type { PromptAuditEndpointDraft, PromptProbeResult } from '../types'
+import type { PromptAuditEndpointDraft, PromptAuditEndpointRole, PromptProbeResult } from '../types'
 import { cloneData, createDefaultEndpoint } from '../viewModel'
 
 const props = defineProps<{
@@ -157,6 +167,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const editing = ref<PromptAuditEndpointDraft | null>(null)
 const editingIndex = ref(-1)
+const hasOtherReview = computed(() => props.endpoints.some((endpoint, index) => endpoint.role === 'review' && index !== editingIndex.value))
 
 function openCreate() {
   editingIndex.value = -1
@@ -169,6 +180,18 @@ function openEdit(endpoint: PromptAuditEndpointDraft) {
 function closeEditor() {
   editing.value = null
   editingIndex.value = -1
+}
+function setRole(event: Event) {
+  if (!editing.value) return
+  const role = (event.target as HTMLSelectElement).value as PromptAuditEndpointRole
+  if (role === editing.value.role) return
+  editing.value.role = role
+  if (role === 'review') {
+    editing.value.timeout_ms = 120000
+    editing.value.input_limit = 3000
+  } else if (editing.value.timeout_ms > 30000) {
+    editing.value.timeout_ms = 3000
+  }
 }
 function saveEditor() {
   if (!editing.value?.id.trim() || !editing.value.name.trim() || !editing.value.base_url.trim()) return

@@ -19,8 +19,16 @@ const (
 	ErrorCodeConfigUnavailable     = "prompt_audit_config_unavailable"
 	ErrorCodeEncryptionKeyRequired = "prompt_audit_encryption_key_required"
 	ErrorCodeRequiresEnabled       = "prompt_guard_requires_audit_enabled"
+	ErrorCodeReviewAsyncOnly       = "prompt_audit_review_async_only"
+	ErrorCodeReviewSingleWorker    = "prompt_audit_review_single_worker"
 
 	DefaultGuardModel = "sileader/qwen3guard:0.6b"
+
+	EndpointRolePrimary = "primary"
+	EndpointRoleReview  = "review"
+
+	ReviewStatusCompleted = "completed"
+	ReviewStatusFailed    = "failed"
 )
 
 type Mode string
@@ -137,6 +145,12 @@ type NormalizedResult struct {
 	ChunkTotal        int                `json:"chunk_total"`
 	LatencyMS         int                `json:"latency_ms"`
 	UnknownCategories []string           `json:"unknown_categories,omitempty"`
+}
+
+type ReviewOutcome struct {
+	Status    string            `json:"status"`
+	Result    *NormalizedResult `json:"result,omitempty"`
+	ErrorCode string            `json:"error_code,omitempty"`
 }
 
 type PromptDecision struct {

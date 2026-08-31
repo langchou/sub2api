@@ -56,7 +56,8 @@
       <div class="space-y-4 rounded-xl border border-gray-200 p-4 dark:border-dark-700/60 dark:bg-dark-900/20 sm:p-5">
         <label class="block text-sm text-gray-700 dark:text-dark-200">
           <span>{{ t('admin.promptAudit.policy.workerCount') }}</span>
-          <input :value="draft.worker_count" type="number" min="1" max="32" class="input mt-1.5 w-full" :aria-label="t('admin.promptAudit.policy.workerCount')" @input="patch({ worker_count: Number(($event.target as HTMLInputElement).value) })" />
+          <input :value="reviewEnabled ? 1 : draft.worker_count" type="number" min="1" max="32" class="input mt-1.5 w-full" :disabled="reviewEnabled" :title="reviewEnabled ? t('admin.promptAudit.policy.reviewWorkerHint') : undefined" :aria-label="t('admin.promptAudit.policy.workerCount')" @input="patch({ worker_count: Number(($event.target as HTMLInputElement).value) })" />
+          <span v-if="reviewEnabled" class="mt-1 block text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.policy.reviewWorkerHint') }}</span>
         </label>
         <label class="block text-sm text-gray-700 dark:text-dark-200">
           <span>{{ t('admin.promptAudit.policy.queueCapacity') }}</span>
@@ -75,12 +76,13 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { PromptAuditDraft, PromptAuditGroup } from '../types'
-import { cloneData, SCANNER_CATALOG } from '../viewModel'
+import { cloneData, hasEnabledReview, SCANNER_CATALOG } from '../viewModel'
 
 const props = defineProps<{ draft: PromptAuditDraft; groups: PromptAuditGroup[] }>()
 const emit = defineEmits<{ (event: 'update:draft', value: PromptAuditDraft): void }>()
 const { t } = useI18n()
 const groupSearch = ref('')
+const reviewEnabled = computed(() => hasEnabledReview(props.draft))
 
 const filteredGroups = computed(() => {
   const query = groupSearch.value.trim().toLowerCase()

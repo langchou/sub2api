@@ -73,6 +73,7 @@ type fakeJobRepository struct {
 	createdSnapshot PromptSnapshot
 	markedCode      string
 	completedResult *NormalizedResult
+	completedReview *ReviewOutcome
 	completedStore  bool
 	completeCount   int
 	eventCount      int
@@ -139,11 +140,12 @@ func (r *fakeJobRepository) RefreshLease(context.Context, int64, int64, time.Tim
 	r.refreshes++
 	return r.refreshErr
 }
-func (r *fakeJobRepository) Complete(_ context.Context, _ *Job, result *NormalizedResult, storePass bool) (*Event, error) {
+func (r *fakeJobRepository) Complete(_ context.Context, job *Job, result *NormalizedResult, storePass bool) (*Event, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.completeCount++
 	r.completedResult, r.completedStore = result, storePass
+	r.completedReview = job.Review
 	if r.completeErr != nil {
 		return nil, r.completeErr
 	}
@@ -384,6 +386,61 @@ func TestWorkerCompletesPassWithoutEventRefreshesEveryChunkAndDeletesPayload(t *
 	require.Equal(t, []int64{51}, payload.deleted)
 	require.Equal(t, int64(1), metrics.Snapshot().Total)
 	require.Equal(t, int64(1), metrics.Snapshot().Allowed)
+}
+
+func TestWorkerReviewsOnlyPrimaryFindingsAndPreservesReviewFailures(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		primary      EventDecision
+		review       *NormalizedResult
+		reviewErr    error
+		wantCalls    []string
+		wantStatus   string
+		wantDecision EventDecision
+	}{
+		{name: "safe skips review", primary: EventPass, wantCalls: []string{"primary"}},
+		{name: "finding is reviewed", primary: EventFlag, review: integrationResult(EventPass), wantCalls: []string{"primary", "review"}, wantStatus: ReviewStatusCompleted, wantDecision: EventPass},
+		{name: "review failure keeps primary event", primary: EventCritical, reviewErr: &GuardError{Code: ErrorCodeUnavailable}, wantCalls: []string{"primary", "review"}, wantStatus: ReviewStatusFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := asyncConfig()
+			cfg.Endpoints = []ActiveEndpoint{
+				{ID: "primary", Role: EndpointRolePrimary, Enabled: true, InputLimit: 10},
+				{ID: "review", Role: EndpointRoleReview, Enabled: true, InputLimit: 10},
+			}
+			repo := &fakeJobRepository{}
+			payload := &fakePayloadStore{values: map[int64]string{51: "abc"}}
+			calls := []string{}
+			runner := NewRunner(&fakeConfigStore{cfg: cfg, active: true}, repo, payload, PromptScannerFunc(func(_ context.Context, endpoint ActiveEndpoint, _ string, _ []string) (*NormalizedResult, error) {
+				calls = append(calls, endpoint.ID)
+				if endpoint.Role == EndpointRoleReview {
+					if test.reviewErr != nil {
+						return nil, test.reviewErr
+					}
+					result := *test.review
+					result.GuardEndpointID = endpoint.ID
+					return &result, nil
+				}
+				return integrationResult(test.primary), nil
+			}), NewAtomicMetrics())
+
+			require.NoError(t, runner.processJob(context.Background(), 0, cfg, workerJob(1, 3)))
+			require.Equal(t, test.wantCalls, calls)
+			if test.wantStatus == "" {
+				require.Nil(t, repo.completedReview)
+				return
+			}
+			require.NotNil(t, repo.completedReview)
+			require.Equal(t, test.wantStatus, repo.completedReview.Status)
+			if test.wantStatus == ReviewStatusCompleted {
+				require.NotNil(t, repo.completedReview.Result)
+				require.Equal(t, test.wantDecision, repo.completedReview.Result.Decision)
+			} else {
+				require.Equal(t, ErrorCodeUnavailable, repo.completedReview.ErrorCode)
+				require.Equal(t, 1, repo.completeCount)
+			}
+		})
+	}
 }
 
 func TestWorkerRetryBackoffTerminalFailureAndFailover(t *testing.T) {

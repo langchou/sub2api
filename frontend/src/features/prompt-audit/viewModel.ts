@@ -28,22 +28,24 @@ export function cloneData<T>(value: T): T {
 }
 
 export function configToDraft(config: PromptAuditConfig): PromptAuditDraft {
-  return {
+  return enforceReviewConstraints({
     ...cloneData(config),
     group_ids: [...(config.group_ids ?? [])],
     scanners: [...(config.scanners ?? [])],
     endpoints: (config.endpoints ?? []).map((endpoint) => ({
       ...endpoint,
+      role: endpoint.role || 'primary',
       token: '',
       clear_token: false,
     })),
-  }
+  })
 }
 
 export function createDefaultEndpoint(index = 1): PromptAuditEndpointDraft {
   return {
     id: `guard-${Date.now()}-${index}`,
     name: `Guard ${index}`,
+    role: 'primary',
     protocol: 'openai_compatible',
     base_url: 'http://127.0.0.1:8000',
     model: DEFAULT_GUARD_MODEL,
@@ -58,21 +60,23 @@ export function createDefaultEndpoint(index = 1): PromptAuditEndpointDraft {
 }
 
 export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRequest {
+  const constrained = enforceReviewConstraints(draft)
   return {
-    expected_config_version: draft.config_version,
-    enabled: draft.enabled,
-    blocking_enabled: draft.enabled && draft.blocking_enabled,
-    blocking_latest_turn_only: draft.blocking_latest_turn_only,
-    store_pass_events: draft.store_pass_events,
+    expected_config_version: constrained.config_version,
+    enabled: constrained.enabled,
+    blocking_enabled: constrained.enabled && constrained.blocking_enabled,
+    blocking_latest_turn_only: constrained.blocking_latest_turn_only,
+    store_pass_events: constrained.store_pass_events,
     strategy: 'priority',
-    worker_count: Number(draft.worker_count),
-    queue_capacity: Number(draft.queue_capacity),
-    scanners: [...draft.scanners],
-    all_groups: draft.all_groups,
-    group_ids: draft.all_groups ? [] : [...draft.group_ids].sort((a, b) => a - b),
-    endpoints: draft.endpoints.map((endpoint) => ({
+    worker_count: Number(constrained.worker_count),
+    queue_capacity: Number(constrained.queue_capacity),
+    scanners: [...constrained.scanners],
+    all_groups: constrained.all_groups,
+    group_ids: constrained.all_groups ? [] : [...constrained.group_ids].sort((a, b) => a - b),
+    endpoints: constrained.endpoints.map((endpoint) => ({
       id: endpoint.id.trim(),
       name: endpoint.name.trim(),
+      role: endpoint.role || 'primary',
       protocol: 'openai_compatible',
       base_url: endpoint.base_url.trim(),
       model: endpoint.model.trim() || DEFAULT_GUARD_MODEL,
@@ -83,6 +87,15 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
       enabled: endpoint.enabled,
     })),
   }
+}
+
+export function hasEnabledReview(draft: PromptAuditDraft): boolean {
+  return draft.endpoints.some((endpoint) => endpoint.enabled && endpoint.role === 'review')
+}
+
+export function enforceReviewConstraints(draft: PromptAuditDraft): PromptAuditDraft {
+  if (!hasEnabledReview(draft)) return draft
+  return { ...draft, blocking_enabled: false, worker_count: 1 }
 }
 
 export function draftFingerprint(draft: PromptAuditDraft | null): string {

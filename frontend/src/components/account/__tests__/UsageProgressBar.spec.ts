@@ -147,6 +147,41 @@ describe('UsageProgressBar', () => {
     expect(wrapper.get('.h-1\\.5 > div').classes()).toContain('bg-red-500')
   })
 
+  it('根据账号费用和取整后的使用率显示等效额度区间', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d',
+        utilization: 9,
+        color: 'emerald',
+        windowStats: { requests: 10, tokens: 1000, cost: 290 }
+      }
+    })
+
+    const quota = wrapper.get('[data-testid="equivalent-quota"]')
+    expect(quota.text()).toContain('usage.equivalentQuota')
+    expect(quota.text()).toContain('$3,052.63 - $3,411.76')
+    expect(quota.attributes('title')).toBe('usage.equivalentQuotaHint')
+  })
+
+  it('无法可靠反推额度时不显示区间', () => {
+    const windowStats = { requests: 10, tokens: 1000, cost: 290 }
+    const zeroPercent = mount(UsageProgressBar, {
+      props: { label: '7d', utilization: 0, color: 'emerald', windowStats }
+    })
+    const remainingCapacity = mount(UsageProgressBar, {
+      props: {
+        label: 'Req',
+        utilization: 9,
+        color: 'emerald',
+        remainingCapacity: true,
+        windowStats
+      }
+    })
+
+    expect(zeroPercent.find('[data-testid="equivalent-quota"]').exists()).toBe(false)
+    expect(remainingCapacity.find('[data-testid="equivalent-quota"]').exists()).toBe(false)
+  })
+
   it('默认利用率模式按 75/90 阈值提前预警分级', () => {
     const mountAt = (utilization: number) =>
       mount(UsageProgressBar, {

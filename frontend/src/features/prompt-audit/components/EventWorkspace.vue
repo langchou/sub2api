@@ -87,7 +87,17 @@
               <p class="mt-1 text-xs text-gray-500">{{ event.snapshot.model }} · {{ event.snapshot.protocol }} · {{ event.snapshot.stage || 'http' }}</p>
             </td>
             <td class="px-3 py-3">
-              <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="decisionClass(event.decision)">{{ formatDecisionRisk(event.decision, event.risk_level) }}</span>
+              <div class="flex items-center gap-2" data-test="primary-result">
+                <span class="w-10 shrink-0 text-[10px] font-medium uppercase text-gray-400">{{ t('admin.promptAudit.events.primaryResult') }}</span>
+                <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="decisionClass(event.decision)">{{ formatDecisionRisk(event.decision, event.risk_level) }}</span>
+              </div>
+              <div v-if="event.review" class="mt-1.5 flex items-center gap-2" data-test="review-result">
+                <span class="w-10 shrink-0 text-[10px] font-medium uppercase text-gray-400">{{ t('admin.promptAudit.events.reviewResult') }}</span>
+                <span v-if="event.review.result" class="rounded-full px-2 py-0.5 text-xs font-medium" :class="decisionClass(event.review.result.decision)">
+                  {{ formatDecisionRisk(event.review.result.decision, event.review.result.risk_level) }}
+                </span>
+                <span v-else class="text-xs text-red-600 dark:text-red-300">{{ event.review.error_code || t('admin.promptAudit.events.reviewFailed') }}</span>
+              </div>
               <p class="mt-2 max-w-48 truncate text-xs text-gray-500" :title="formatCategories(event.categories)">{{ formatCategories(event.categories) }}</p>
             </td>
             <td class="max-w-xs px-3 py-3"><p class="line-clamp-2 break-words text-gray-600 dark:text-dark-300">{{ event.snapshot.redacted_preview || '—' }}</p></td>

@@ -94,7 +94,7 @@
       <div class="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3">
         <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
           <SaveToggle :label="t('admin.promptAudit.saveBar.enabled')" :model-value="draft.enabled" data-test="enabled-toggle" @update:model-value="setEnabled" />
-          <SaveToggle :label="t('admin.promptAudit.saveBar.blocking')" :model-value="draft.blocking_enabled" :disabled="!draft.enabled" data-test="blocking-toggle" @update:model-value="setBlocking" />
+          <SaveToggle :label="t('admin.promptAudit.saveBar.blocking')" :model-value="draft.blocking_enabled" :disabled="!draft.enabled || reviewEnabled" :title="reviewEnabled ? t('admin.promptAudit.saveBar.reviewAsyncOnly') : undefined" data-test="blocking-toggle" @update:model-value="setBlocking" />
           <SaveToggle :label="t('admin.promptAudit.saveBar.blockingLatestTurnOnly')" :model-value="draft.blocking_latest_turn_only" :disabled="!draft.enabled || !draft.blocking_enabled" data-test="blocking-latest-turn-only-toggle" @update:model-value="replaceDraft({ ...draft!, blocking_latest_turn_only: $event })" />
           <SaveToggle :label="t('admin.promptAudit.saveBar.storePass')" :model-value="draft.store_pass_events" data-test="store-pass-toggle" @update:model-value="replaceDraft({ ...draft!, store_pass_events: $event })" />
         </div>
@@ -169,7 +169,7 @@ import type {
   PromptLoadErrors,
   PromptProbeResult,
 } from './types'
-import { buildUpdateRequest, cloneData, configToDraft, draftFingerprint, emptyEventFilters } from './viewModel'
+import { buildUpdateRequest, cloneData, configToDraft, draftFingerprint, emptyEventFilters, enforceReviewConstraints, hasEnabledReview } from './viewModel'
 
 const { t, locale } = useI18n()
 const appStore = useAppStore()
@@ -199,6 +199,7 @@ const deleteRequest = reactive<{ mode: '' | 'single' | 'batch'; ids: number[] }>
 const loading = reactive({ config: false, runtime: false, groups: false, events: false, saving: false, detail: false, deleting: false, previewing: false })
 const loadErrors = reactive<PromptLoadErrors>({ config: '', runtime: '', groups: '', events: '' })
 const dirty = computed(() => draftFingerprint(draft.value) !== draftFingerprint(serverConfig.value))
+const reviewEnabled = computed(() => Boolean(draft.value && hasEnabledReview(draft.value)))
 
 const SaveToggle = defineComponent({
   inheritAttrs: false,
@@ -289,7 +290,7 @@ async function loadInitial() {
   await Promise.allSettled([loadConfig(), loadRuntime(), loadGroups(), loadEvents()])
 }
 
-function replaceDraft(value: PromptAuditDraft) { draft.value = cloneData(value) }
+function replaceDraft(value: PromptAuditDraft) { draft.value = cloneData(enforceReviewConstraints(value)) }
 function updateEndpoints(value: PromptAuditEndpointDraft[]) {
   if (!draft.value) return
   replaceDraft({ ...draft.value, endpoints: value })
@@ -299,13 +300,13 @@ function setEnabled(value: boolean) {
   replaceDraft({ ...draft.value, enabled: value, blocking_enabled: value ? draft.value.blocking_enabled : false })
 }
 function setBlocking(value: boolean) {
-  if (!draft.value || !draft.value.enabled) return
+  if (!draft.value || !draft.value.enabled || reviewEnabled.value) return
   if (value && !draft.value.blocking_enabled) { showBlockingConfirmation.value = true; return }
   replaceDraft({ ...draft.value, blocking_enabled: value })
 }
 function confirmBlocking() {
   showBlockingConfirmation.value = false
-  if (draft.value) replaceDraft({ ...draft.value, blocking_enabled: true })
+  if (draft.value && !reviewEnabled.value) replaceDraft({ ...draft.value, blocking_enabled: true })
 }
 function resetDraft() {
   if (serverConfig.value) draft.value = cloneData(serverConfig.value)

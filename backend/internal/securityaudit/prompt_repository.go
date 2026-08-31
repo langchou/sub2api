@@ -38,6 +38,7 @@ type Job struct {
 	LastErrorMessage    string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	Review              *ReviewOutcome
 }
 
 type Event struct {
@@ -60,6 +61,7 @@ type Event struct {
 	ChunkTotal      int                `json:"chunk_total"`
 	LatencyMS       int                `json:"latency_ms"`
 	IssueSummaries  []IssueSummary     `json:"issue_summaries"`
+	Review          *ReviewOutcome     `json:"review,omitempty"`
 	CreatedAt       time.Time          `json:"created_at"`
 }
 
@@ -187,7 +189,7 @@ func (r *PostgreSQLRepository) Complete(ctx context.Context, job *Job, result *N
 	}
 	var event *Event
 	if shouldStorePromptAuditEvent(result.Decision, storePassEvents) {
-		event, err = insertEvent(ctx, tx, job.ID, job.Snapshot.Redacted(), job.ConfigVersion, result)
+		event, err = insertEvent(ctx, tx, job.ID, job.Snapshot.Redacted(), job.ConfigVersion, result, job.Review)
 		if err != nil {
 			return nil, err
 		}
@@ -293,7 +295,7 @@ func (r *PostgreSQLRepository) RecordBlocking(ctx context.Context, snapshot Prom
 	}
 	var event *Event
 	if shouldStorePromptAuditEvent(result.Decision, storePassEvents) {
-		event, err = insertEvent(ctx, tx, job.ID, snapshot.Redacted(), configVersion, result)
+		event, err = insertEvent(ctx, tx, job.ID, snapshot.Redacted(), configVersion, result, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -334,7 +336,7 @@ func insertJob(ctx context.Context, queryer sqlQueryer, snapshot PromptSnapshot,
 	return scanJob(row)
 }
 
-func insertEvent(ctx context.Context, queryer sqlQueryer, jobID int64, snapshot PromptSnapshot, configVersion int64, result *NormalizedResult) (*Event, error) {
+func insertEvent(ctx context.Context, queryer sqlQueryer, jobID int64, snapshot PromptSnapshot, configVersion int64, result *NormalizedResult, review *ReviewOutcome) (*Event, error) {
 	categories, _ := json.Marshal(result.Categories)
 	matched, _ := json.Marshal(result.MatchedScanners)
 	scores, _ := json.Marshal(result.ScannerScores)
@@ -343,15 +345,19 @@ func insertEvent(ctx context.Context, queryer sqlQueryer, jobID int64, snapshot 
 		evidence[key] = RedactPreview(value, 160)
 	}
 	evidenceJSON, _ := json.Marshal(evidence)
+	reviewJSON, _ := json.Marshal(review)
+	if review == nil {
+		reviewJSON = []byte(`{}`)
+	}
 	row := queryer.QueryRowContext(ctx, `
 		INSERT INTO prompt_audit_events (
 			job_id,request_id,user_id,username_snapshot,user_email_snapshot,api_key_id,api_key_name_snapshot,
 			group_id,group_name,provider,endpoint,protocol,model,prompt_hash,redacted_preview,stage,
 			decision,risk_level,action,categories,matched_scanners,scanner_scores,scanner_evidence,
 			scanner_backend,scanner_version,guard_endpoint_id,policy_id,policy_version,config_version,chunk_total,latency_ms,
-			full_prompt
+			full_prompt,review_result
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-			$20::jsonb,$21::jsonb,$22::jsonb,$23::jsonb,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+			$20::jsonb,$21::jsonb,$22::jsonb,$23::jsonb,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33::jsonb)
 		RETURNING `+eventDetailColumns("prompt_audit_events"),
 		jobID, snapshot.RequestID, nullableID(snapshot.UserID), snapshot.UsernameSnapshot, snapshot.UserEmailSnapshot,
 		nullableID(snapshot.APIKeyID), snapshot.APIKeyNameSnapshot, snapshot.GroupID, snapshot.GroupName,
@@ -359,7 +365,7 @@ func insertEvent(ctx context.Context, queryer sqlQueryer, jobID int64, snapshot 
 		snapshot.RedactedPreview, normalizeStage(snapshot.Stage), string(result.Decision), string(result.RiskLevel),
 		string(result.Action), categories, matched, scores, evidenceJSON, result.ScannerBackend, result.ScannerVersion,
 		result.GuardEndpointID, result.PolicyID, result.PolicyVersion, configVersion, result.ChunkTotal, result.LatencyMS,
-		snapshot.FullPrompt)
+		snapshot.FullPrompt, reviewJSON)
 	return scanEvent(row, true)
 }
 

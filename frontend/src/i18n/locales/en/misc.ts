@@ -30,7 +30,7 @@ export default {
     viewChangelog: 'View Changelog',
     refresh: 'Refresh',
     sourceMode: 'Source Build',
-    sourceModeHint: 'Custom build, deploy a new image to update',
+    sourceModeHint: 'When upstream releases a new version, merge it and publish a new custom image',
     updateNow: 'Update Now',
     updating: 'Updating...',
     updateComplete: 'Update Complete',

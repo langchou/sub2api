@@ -14,17 +14,20 @@ import (
 )
 
 const (
-	DefaultWorkerCount   = 4
-	MaxWorkerCount       = 32
-	DefaultQueueCapacity = 32768
-	MaxQueueCapacity     = 100000
-	DefaultTimeoutMS     = 3000
-	MinTimeoutMS         = 100
-	MaxTimeoutMS         = 30000
-	DefaultInputLimit    = 4000
-	MinInputLimit        = 128
-	MaxInputLimit        = 100000
-	DefaultPayloadTTL    = 30 * time.Minute
+	DefaultWorkerCount      = 4
+	MaxWorkerCount          = 32
+	DefaultQueueCapacity    = 32768
+	MaxQueueCapacity        = 100000
+	DefaultTimeoutMS        = 3000
+	MinTimeoutMS            = 100
+	MaxTimeoutMS            = 30000
+	DefaultReviewTimeoutMS  = 120000
+	MaxReviewTimeoutMS      = 180000
+	DefaultInputLimit       = 4000
+	DefaultReviewInputLimit = 3000
+	MinInputLimit           = 128
+	MaxInputLimit           = 100000
+	DefaultPayloadTTL       = 30 * time.Minute
 )
 
 type SecretEncryptor interface {
@@ -54,6 +57,7 @@ type ConfigStore interface {
 type StorageEndpoint struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`
+	Role            string `json:"role,omitempty"`
 	Protocol        string `json:"protocol"`
 	BaseURL         string `json:"base_url"`
 	Model           string `json:"model"`
@@ -84,6 +88,7 @@ type storageConfig struct {
 type ActiveEndpoint struct {
 	ID         string
 	Name       string
+	Role       string
 	Protocol   string
 	BaseURL    string
 	Model      string
@@ -120,6 +125,7 @@ type ActiveConfig struct {
 type PublicEndpoint struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
+	Role        string `json:"role"`
 	Protocol    string `json:"protocol"`
 	BaseURL     string `json:"base_url"`
 	Model       string `json:"model"`
@@ -152,6 +158,7 @@ type PublicConfig struct {
 type UpdateEndpoint struct {
 	ID         string `json:"id" binding:"required"`
 	Name       string `json:"name" binding:"required"`
+	Role       string `json:"role"`
 	Protocol   string `json:"protocol"`
 	BaseURL    string `json:"base_url" binding:"required"`
 	Model      string `json:"model"`
@@ -236,6 +243,7 @@ func normalizeStorageConfig(cfg *storageConfig) {
 		ep := &cfg.Endpoints[i]
 		ep.ID = strings.TrimSpace(ep.ID)
 		ep.Name = strings.TrimSpace(ep.Name)
+		ep.Role = normalizeEndpointRole(ep.Role)
 		ep.Protocol = strings.TrimSpace(ep.Protocol)
 		if ep.Protocol == "" {
 			ep.Protocol = "openai_compatible"
@@ -246,10 +254,10 @@ func normalizeStorageConfig(cfg *storageConfig) {
 			ep.Model = DefaultGuardModel
 		}
 		if ep.TimeoutMS == 0 {
-			ep.TimeoutMS = DefaultTimeoutMS
+			ep.TimeoutMS = defaultEndpointTimeout(ep.Role)
 		}
 		if ep.InputLimit == 0 {
-			ep.InputLimit = DefaultInputLimit
+			ep.InputLimit = defaultEndpointInputLimit(ep.Role)
 		}
 	}
 }
@@ -274,7 +282,7 @@ func validateStorageConfig(cfg storageConfig) error {
 		return infraerrors.BadRequest("prompt_audit_scanners_required", "至少需要启用一个风险分类")
 	}
 	seen := make(map[string]struct{}, len(cfg.Endpoints))
-	enabled := 0
+	enabledPrimary, reviewCount, enabledReview := 0, 0, 0
 	for _, ep := range cfg.Endpoints {
 		if ep.ID == "" || ep.Name == "" {
 			return infraerrors.BadRequest("prompt_audit_invalid_endpoint", "审计节点 ID 和名称不能为空")
@@ -283,24 +291,41 @@ func validateStorageConfig(cfg storageConfig) error {
 			return infraerrors.BadRequest("prompt_audit_duplicate_endpoint", "审计节点 ID 不能重复")
 		}
 		seen[ep.ID] = struct{}{}
+		if ep.Role != EndpointRolePrimary && ep.Role != EndpointRoleReview {
+			return infraerrors.BadRequest("prompt_audit_invalid_endpoint_role", "审计节点角色无效")
+		}
 		if ep.Protocol != "openai_compatible" {
 			return infraerrors.BadRequest("prompt_audit_invalid_endpoint_protocol", "审计节点仅支持 OpenAI 兼容协议")
 		}
 		if _, err := NormalizeBaseURL(ep.BaseURL); err != nil {
 			return err
 		}
-		if ep.TimeoutMS < MinTimeoutMS || ep.TimeoutMS > MaxTimeoutMS {
+		if ep.TimeoutMS < MinTimeoutMS || ep.TimeoutMS > maxEndpointTimeout(ep.Role) {
 			return infraerrors.BadRequest("prompt_audit_invalid_timeout", "审计节点超时超出允许范围")
 		}
 		if ep.InputLimit < MinInputLimit || ep.InputLimit > MaxInputLimit {
 			return infraerrors.BadRequest("prompt_audit_invalid_input_limit", "审计节点输入上限超出允许范围")
 		}
-		if ep.Enabled {
-			enabled++
+		if ep.Role == EndpointRoleReview {
+			reviewCount++
+			if ep.Enabled {
+				enabledReview++
+			}
+		} else if ep.Enabled {
+			enabledPrimary++
 		}
 	}
-	if cfg.Enabled && enabled == 0 {
-		return infraerrors.BadRequest("prompt_audit_endpoint_required", "启用提示词审计前至少需要启用一个审计节点")
+	if reviewCount > 1 {
+		return infraerrors.BadRequest("prompt_audit_review_endpoint_duplicate", "最多只能配置一个复审节点")
+	}
+	if cfg.Enabled && enabledPrimary == 0 {
+		return infraerrors.BadRequest("prompt_audit_endpoint_required", "启用提示词审计前至少需要启用一个初审节点")
+	}
+	if cfg.Enabled && enabledReview > 0 && cfg.BlockingEnabled {
+		return infraerrors.BadRequest(ErrorCodeReviewAsyncOnly, "8B 复审仅支持异步审计模式")
+	}
+	if cfg.Enabled && enabledReview > 0 && cfg.WorkerCount != 1 {
+		return infraerrors.BadRequest(ErrorCodeReviewSingleWorker, "启用 8B 复审时 Worker 数量必须为 1")
 	}
 	return nil
 }
@@ -333,13 +358,24 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 			}
 		}
 	}
+	reviewCount := 0
 	for _, endpoint := range req.Endpoints {
-		if endpoint.TimeoutMS < MinTimeoutMS || endpoint.TimeoutMS > MaxTimeoutMS {
+		role := normalizeEndpointRole(endpoint.Role)
+		if role != EndpointRolePrimary && role != EndpointRoleReview {
+			return infraerrors.BadRequest("prompt_audit_invalid_endpoint_role", "审计节点角色无效")
+		}
+		if role == EndpointRoleReview {
+			reviewCount++
+		}
+		if endpoint.TimeoutMS < MinTimeoutMS || endpoint.TimeoutMS > maxEndpointTimeout(role) {
 			return infraerrors.BadRequest("prompt_audit_invalid_timeout", "审计节点超时超出允许范围")
 		}
 		if endpoint.InputLimit < MinInputLimit || endpoint.InputLimit > MaxInputLimit {
 			return infraerrors.BadRequest("prompt_audit_invalid_input_limit", "审计节点输入上限超出允许范围")
 		}
+	}
+	if reviewCount > 1 {
+		return infraerrors.BadRequest("prompt_audit_review_endpoint_duplicate", "最多只能配置一个复审节点")
 	}
 	return nil
 }
@@ -368,11 +404,20 @@ func (cfg ActiveConfig) IncludesGroup(groupID *int64) bool {
 func (cfg ActiveConfig) EnabledEndpoints() []ActiveEndpoint {
 	result := make([]ActiveEndpoint, 0, len(cfg.Endpoints))
 	for _, ep := range cfg.Endpoints {
-		if ep.Enabled {
+		if ep.Enabled && ep.Role != EndpointRoleReview {
 			result = append(result, ep)
 		}
 	}
 	return result
+}
+
+func (cfg ActiveConfig) ReviewEndpoint() (ActiveEndpoint, bool) {
+	for _, endpoint := range cfg.Endpoints {
+		if endpoint.Enabled && endpoint.Role == EndpointRoleReview {
+			return endpoint, true
+		}
+	}
+	return ActiveEndpoint{}, false
 }
 
 // InvalidTokenEndpointIDs lists endpoints whose stored token could not be
@@ -405,7 +450,7 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 			}
 		}
 		endpoints = append(endpoints, PublicEndpoint{
-			ID: ep.ID, Name: ep.Name, Protocol: ep.Protocol, BaseURL: ep.BaseURL,
+			ID: ep.ID, Name: ep.Name, Role: normalizeEndpointRole(ep.Role), Protocol: ep.Protocol, BaseURL: ep.BaseURL,
 			Model: ep.Model, TimeoutMS: ep.TimeoutMS, InputLimit: ep.InputLimit,
 			Enabled: ep.Enabled, HasToken: hasToken, TokenStatus: status,
 		})
@@ -450,12 +495,41 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 			}
 		}
 		active.Endpoints = append(active.Endpoints, ActiveEndpoint{
-			ID: ep.ID, Name: ep.Name, Protocol: ep.Protocol, BaseURL: ep.BaseURL, Model: ep.Model,
+			ID: ep.ID, Name: ep.Name, Role: normalizeEndpointRole(ep.Role), Protocol: ep.Protocol, BaseURL: ep.BaseURL, Model: ep.Model,
 			Token: token, TimeoutMS: ep.TimeoutMS, InputLimit: ep.InputLimit,
 			Enabled: ep.Enabled && !tokenInvalid, TokenInvalid: tokenInvalid,
 		})
 	}
 	return active, nil
+}
+
+func normalizeEndpointRole(role string) string {
+	role = strings.TrimSpace(strings.ToLower(role))
+	if role == "" {
+		return EndpointRolePrimary
+	}
+	return role
+}
+
+func defaultEndpointTimeout(role string) int {
+	if normalizeEndpointRole(role) == EndpointRoleReview {
+		return DefaultReviewTimeoutMS
+	}
+	return DefaultTimeoutMS
+}
+
+func maxEndpointTimeout(role string) int {
+	if normalizeEndpointRole(role) == EndpointRoleReview {
+		return MaxReviewTimeoutMS
+	}
+	return MaxTimeoutMS
+}
+
+func defaultEndpointInputLimit(role string) int {
+	if normalizeEndpointRole(role) == EndpointRoleReview {
+		return DefaultReviewInputLimit
+	}
+	return DefaultInputLimit
 }
 
 func changeSummary(cfg storageConfig) string {

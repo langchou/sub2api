@@ -5,7 +5,7 @@
       v-if="windowStats && (windowStats.requests > 0 || windowStats.tokens > 0)"
       class="mb-0.5 flex items-center"
     >
-      <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
+      <div class="flex flex-wrap items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
         <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
           {{ formatRequests }} req
         </span>
@@ -21,6 +21,14 @@
           :title="t('usage.userBilled')"
         >
           U ${{ formatUserCost }}
+        </span>
+        <span
+          v-if="equivalentQuotaRange"
+          data-testid="equivalent-quota"
+          class="whitespace-nowrap rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
+          :title="t('usage.equivalentQuotaHint')"
+        >
+          {{ t('usage.equivalentQuota') }} {{ equivalentQuotaRange }}
         </span>
       </div>
     </div>
@@ -58,7 +66,7 @@ import { computed, ref, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import type { WindowStats } from '@/types'
-import { formatCompactNumber } from '@/utils/format'
+import { formatCompactNumber, formatCurrency } from '@/utils/format'
 
 const props = withDefaults(
   defineProps<{
@@ -162,14 +170,37 @@ const barWidth = computed(() => {
   return `${Math.min(Math.max(props.utilization, 0), 100)}%`
 })
 
-// Display percentage (cap at 999% for readability)
-const displayPercent = computed(() => {
-  const percent = Math.round(
+const roundedPercent = computed(() =>
+  Math.round(
     props.remainingCapacity
       ? Math.min(Math.max(props.utilization, 0), 100)
       : props.utilization
   )
+)
+
+// Display percentage (cap at 999% for readability)
+const displayPercent = computed(() => {
+  const percent = roundedPercent.value
   return percent > 999 ? '>999%' : `${percent}%`
+})
+
+const equivalentQuotaRange = computed(() => {
+  const cost = props.windowStats?.cost
+  const percent = roundedPercent.value
+  if (
+    props.remainingCapacity ||
+    cost == null ||
+    !Number.isFinite(cost) ||
+    cost <= 0 ||
+    percent <= 0 ||
+    percent > 999
+  ) {
+    return ''
+  }
+
+  const lower = cost / ((percent + 0.5) / 100)
+  const upper = cost / ((percent - 0.5) / 100)
+  return `${formatCurrency(lower)} - ${formatCurrency(upper)}`
 })
 
 const shouldShowResetTime = computed(() => {

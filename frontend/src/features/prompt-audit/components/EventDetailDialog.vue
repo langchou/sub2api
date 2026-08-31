@@ -16,7 +16,12 @@
             <pre class="mt-2 max-h-[min(46vh,26rem)] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-4 text-sm text-gray-700 dark:bg-dark-900 dark:text-dark-200" data-test="summary-prompt-full">{{ displayPrompt(event) }}</pre>
           </div>
           <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt class="text-gray-500">{{ t('admin.promptAudit.events.decision') }}</dt><dd class="font-medium text-gray-900 dark:text-white">{{ formatDecisionAction(event.decision, event.action) }}</dd>
+            <dt class="text-gray-500">{{ t('admin.promptAudit.events.primaryDecision') }}</dt><dd class="font-medium text-gray-900 dark:text-white">{{ formatDecisionAction(event.decision, event.action) }}</dd>
+            <template v-if="event.review">
+              <dt class="text-gray-500">{{ t('admin.promptAudit.events.reviewDecision') }}</dt>
+              <dd v-if="event.review.result" class="font-medium text-gray-900 dark:text-white">{{ formatDecisionAction(event.review.result.decision, event.review.result.action) }}</dd>
+              <dd v-else class="text-red-600 dark:text-red-300">{{ event.review.error_code || t('admin.promptAudit.events.reviewFailed') }}</dd>
+            </template>
             <dt class="text-gray-500">{{ t('admin.promptAudit.events.user') }}</dt><dd>{{ event.snapshot.username || '—' }}</dd>
             <dt class="text-gray-500">{{ t('admin.promptAudit.events.email') }}</dt><dd>{{ event.snapshot.user_email || '—' }}</dd>
             <dt class="text-gray-500">{{ t('admin.promptAudit.events.apiKey') }}</dt><dd>{{ event.snapshot.api_key_name || '—' }}</dd>
@@ -34,9 +39,14 @@
               <pre class="mt-2 h-[min(46vh,26rem)] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-4 text-sm text-gray-700 dark:bg-dark-900 dark:text-dark-200" data-test="risk-prompt-full">{{ displayPrompt(event) }}</pre>
             </section>
             <section data-test="risk-guard-return">
-              <h4 class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.events.guardReturn') }}</h4>
+              <h4 class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.events.primaryGuardReturn') }}</h4>
               <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.events.guardReturnHint') }}</p>
               <pre class="mt-2 h-[min(46vh,26rem)] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-4 font-mono text-xs text-gray-700 dark:bg-dark-900 dark:text-dark-200">{{ formatGuardReturn(event) }}</pre>
+              <div v-if="event.review" class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-700" data-test="risk-review-return">
+                <h4 class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.events.reviewGuardReturn') }}</h4>
+                <pre v-if="event.review.result" class="mt-2 max-h-[min(46vh,26rem)] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-4 font-mono text-xs text-gray-700 dark:bg-dark-900 dark:text-dark-200">{{ formatGuardReturn(event.review.result) }}</pre>
+                <p v-else class="mt-2 text-sm text-red-600 dark:text-red-300">{{ event.review.error_code || t('admin.promptAudit.events.reviewFailed') }}</p>
+              </div>
             </section>
           </div>
 
@@ -67,6 +77,10 @@
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.config') }}</dt><dd>v{{ event.config_version }}</dd>
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.chunks') }}</dt><dd>{{ event.chunk_total }}</dd>
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.latency') }}</dt><dd>{{ event.latency_ms }} ms</dd>
+          <template v-if="event.review?.result">
+            <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.reviewEndpoint') }}</dt><dd>{{ event.review.result.guard_endpoint_id }}</dd>
+            <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.reviewLatency') }}</dt><dd>{{ event.review.result.latency_ms }} ms</dd>
+          </template>
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.stage') }}</dt><dd>{{ event.snapshot.stage || 'http' }}</dd>
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.protocol') }}</dt><dd>{{ event.snapshot.protocol }} · {{ event.snapshot.endpoint }}</dd>
         </dl>
@@ -79,7 +93,7 @@
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
-import type { PromptAuditEvent, PromptIssueSummary } from '../types'
+import type { PromptAuditEvent, PromptAuditReviewResult, PromptIssueSummary } from '../types'
 import { SCANNER_CATALOG } from '../viewModel'
 
 const props = defineProps<{ show: boolean; event: PromptAuditEvent | null; loading: boolean }>()
@@ -118,7 +132,7 @@ function translateEvidence(value: string): string {
   if (byLabel) return t(`admin.promptAudit.scanners.${byLabel.id}`)
   return value
 }
-function formatGuardReturn(event: PromptAuditEvent): string {
+function formatGuardReturn(event: PromptAuditEvent | PromptAuditReviewResult): string {
   const evidence: Record<string, string> = {}
   for (const [key, value] of Object.entries(event.scanner_evidence || {})) {
     evidence[key] = translateEvidence(value)

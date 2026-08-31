@@ -31,6 +31,7 @@ export async function probeEndpoint(endpoint: PromptAuditEndpointDraft): Promise
     endpoint: {
       id: endpoint.id,
       name: endpoint.name,
+      role: endpoint.role,
       protocol: 'openai_compatible',
       base_url: endpoint.base_url,
       model: endpoint.model,
