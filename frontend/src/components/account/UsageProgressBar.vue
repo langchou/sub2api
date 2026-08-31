@@ -3,9 +3,12 @@
     <!-- Window stats row (above progress bar) -->
     <div
       v-if="windowStats && (windowStats.requests > 0 || windowStats.tokens > 0)"
-      class="mb-0.5 flex items-center"
+      class="mb-0.5"
     >
-      <div class="flex flex-wrap items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
+      <div
+        data-testid="window-stats-values"
+        class="flex flex-wrap items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400"
+      >
         <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
           {{ formatRequests }} req
         </span>
@@ -22,14 +25,14 @@
         >
           U ${{ formatUserCost }}
         </span>
-        <span
-          v-if="equivalentQuotaRange"
-          data-testid="equivalent-quota"
-          class="whitespace-nowrap rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
-          :title="t('usage.equivalentQuotaHint')"
-        >
-          {{ t('usage.equivalentQuota') }} {{ equivalentQuotaRange }}
-        </span>
+      </div>
+      <div
+        v-if="equivalentQuotaRange"
+        data-testid="equivalent-quota"
+        class="mt-0.5 whitespace-nowrap text-[9px] text-gray-500 dark:text-gray-400"
+        :title="`${t('usage.equivalentQuotaHint')}: ${equivalentQuotaRange.full}`"
+      >
+        {{ t('usage.equivalentQuota') }} {{ equivalentQuotaRange.compact }}
       </div>
     </div>
 
@@ -195,12 +198,17 @@ const equivalentQuotaRange = computed(() => {
     percent <= 0 ||
     percent > 999
   ) {
-    return ''
+    return null
   }
 
   const lower = cost / ((percent + 0.5) / 100)
   const upper = cost / ((percent - 0.5) / 100)
-  return `${formatCurrency(lower)} - ${formatCurrency(upper)}`
+  const compactCurrency = (amount: number) =>
+    Math.abs(amount) >= 1000 ? `$${formatCompactNumber(amount)}` : formatCurrency(amount)
+  return {
+    compact: `${compactCurrency(lower)} - ${compactCurrency(upper)}`,
+    full: `${formatCurrency(lower)} - ${formatCurrency(upper)}`
+  }
 })
 
 const shouldShowResetTime = computed(() => {

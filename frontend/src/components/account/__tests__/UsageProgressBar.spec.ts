@@ -159,8 +159,11 @@ describe('UsageProgressBar', () => {
 
     const quota = wrapper.get('[data-testid="equivalent-quota"]')
     expect(quota.text()).toContain('usage.equivalentQuota')
-    expect(quota.text()).toContain('$3,052.63 - $3,411.76')
-    expect(quota.attributes('title')).toBe('usage.equivalentQuotaHint')
+    expect(quota.text()).toContain('$3.1K - $3.4K')
+    expect(quota.attributes('title')).toContain('$3,052.63 - $3,411.76')
+    expect(quota.element.previousElementSibling).toBe(
+      wrapper.get('[data-testid="window-stats-values"]').element
+    )
   })
 
   it('无法可靠反推额度时不显示区间', () => {
